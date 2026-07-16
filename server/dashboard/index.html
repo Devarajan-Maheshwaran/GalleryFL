@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FGT Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/dashboard/styles.css">
+</head>
+<body>
+  <div class="dashboard" id="dashboard">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar__logo">FGT Server</div>
+      <nav class="sidebar__nav">
+        <a href="#panel-status" class="nav-item active">Overview</a>
+        <a href="#panel-training" class="nav-item">Training Control</a>
+        <a href="#panel-clients" class="nav-item">Clients</a>
+        <a href="#panel-accuracy" class="nav-item">Metrics</a>
+        <a href="#panel-leaderboard" class="nav-item">Leaderboard</a>
+      </nav>
+      <div class="sidebar__footer">
+        <span class="nm-dot nm-dot--online" id="ws-status-dot"></span>&nbsp;
+        <span id="ws-status-text">Connected</span>
+      </div>
+    </aside>
+    
+    <header class="header" id="header">
+      <h1 class="header__title">Federated Gallery Tags</h1>
+      <div class="header__meta">
+        <span class="mono" style="font-size: 14px;" id="uptime">00:00:00</span>
+        <span class="nm-card__badge" id="model-version">Model v1</span>
+      </div>
+    </header>
+    
+    <main class="main-content" id="main-content">
+      
+      <!-- Training Control -->
+      <section class="nm-card nm-card--full" id="panel-training">
+        <div class="nm-card__header">
+          <h2 class="nm-card__title">Training Control</h2>
+          <span class="nm-card__badge" id="phase-badge">Idle</span>
+        </div>
+        <div style="display: flex; gap: var(--space-xl); align-items: center;">
+          <div style="display: flex; gap: var(--space-md);">
+            <div class="nm-input-group">
+              <label class="nm-label">Min Clients</label>
+              <input class="nm-input" type="number" id="inp-min-clients" value="2" style="width: 80px;" disabled>
+            </div>
+            <div class="nm-input-group">
+              <label class="nm-label">Max Rounds</label>
+              <input class="nm-input" type="number" id="inp-max-rounds" value="10" style="width: 80px;" disabled>
+            </div>
+          </div>
+          <div style="display: flex; gap: var(--space-md);">
+            <button class="nm-btn nm-btn--primary" id="btn-start" onclick="startTraining()">Start Training</button>
+            <button class="nm-btn nm-btn--danger" id="btn-stop" onclick="stopTraining()" style="display:none;">Stop</button>
+          </div>
+          <div style="flex-grow: 1;">
+            <div class="nm-progress">
+              <div class="nm-progress__track">
+                <div class="nm-progress__fill" id="round-progress-fill"></div>
+              </div>
+              <span class="nm-progress__label" id="round-progress-label">Round 0 / 10</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Connected Clients -->
+      <section class="nm-card" id="panel-clients">
+        <div class="nm-card__header">
+          <h2 class="nm-card__title">Connected Clients (<span id="client-count">0</span>)</h2>
+        </div>
+        <div id="client-list" style="max-height: 300px; overflow-y: auto; padding-right: 8px;">
+          <p style="color: var(--text-muted); font-size: 14px;">Waiting for clients to connect...</p>
+        </div>
+      </section>
+
+      <!-- Leaderboard -->
+      <section class="nm-card" id="panel-leaderboard">
+        <div class="nm-card__header">
+          <h2 class="nm-card__title">Leaderboard</h2>
+        </div>
+        <div style="overflow-x: auto;">
+          <table class="nm-table" id="leaderboard-table">
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Client</th>
+                <th>Images</th>
+                <th>Score</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- Dynamic rows -->
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Metrics: Accuracy -->
+      <section class="nm-card" id="panel-accuracy">
+        <div class="nm-card__header">
+          <h2 class="nm-card__title">Global Accuracy</h2>
+        </div>
+        <div class="chart-container">
+          <canvas id="accChart"></canvas>
+        </div>
+      </section>
+
+      <!-- Metrics: Loss -->
+      <section class="nm-card" id="panel-loss">
+        <div class="nm-card__header">
+          <h2 class="nm-card__title">Global Loss</h2>
+        </div>
+        <div class="chart-container">
+          <canvas id="lossChart"></canvas>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="/dashboard/dashboard.js"></script>
+</body>
+</html>

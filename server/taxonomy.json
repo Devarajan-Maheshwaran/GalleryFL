@@ -1,0 +1,24 @@
+{
+  "categories": [
+    {
+      "name": "People",
+      "tags": ["group", "portrait", "selfie", "child", "crowd"]
+    },
+    {
+      "name": "Places",
+      "tags": ["beach", "mountain", "city", "forest", "indoor", "architecture"]
+    },
+    {
+      "name": "Activities",
+      "tags": ["sports", "travel", "party", "hiking", "dining"]
+    },
+    {
+      "name": "Objects",
+      "tags": ["food", "vehicle", "animal", "pet", "electronics", "document"]
+    },
+    {
+      "name": "Nature",
+      "tags": ["sunset", "water", "flower", "sky", "landscape"]
+    }
+  ]
+}
