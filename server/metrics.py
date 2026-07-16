@@ -1,7 +1,7 @@
 import time
 import json
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List
 from pydantic import BaseModel
 
 class ClientContribution(BaseModel):
@@ -18,8 +18,8 @@ class RoundMetrics(BaseModel):
     num_clients: int
     global_loss: float
     global_accuracy: float
-    per_class_f1: Dict[str, float]
-    client_contributions: Dict[str, int]
+    total_samples: int = 0
+    client_contributions: Dict[str, int] = {}
 
 class MetricsStore:
     def __init__(self, history_file: str = "output/metrics_history.json"):
@@ -38,8 +38,8 @@ class MetricsStore:
                     self.client_cumulative = {
                         cid: ClientContribution(**c) for cid, c in data.get('client_cumulative', {}).items()
                     }
-            except Exception as e:
-                print(f"Failed to load metrics history: {e}")
+            except Exception:
+                pass
 
     def save(self):
         data = {
@@ -55,31 +55,25 @@ class MetricsStore:
 
     def update_client_contribution(self, client_id: str, nickname: str, images: int, local_acc: float):
         if client_id not in self.client_cumulative:
-            self.client_cumulative[client_id] = ClientContribution(
-                client_id=client_id,
-                nickname=nickname
-            )
+            self.client_cumulative[client_id] = ClientContribution(client_id=client_id, nickname=nickname)
         c = self.client_cumulative[client_id]
         c.rounds_participated += 1
         c.images_contributed += images
-        # Simple moving average for local accuracy
         c.avg_local_accuracy = ((c.avg_local_accuracy * (c.rounds_participated - 1)) + local_acc) / c.rounds_participated
         self.save()
 
     def get_leaderboard(self) -> List[dict]:
-        # Score calculation: images 40%, rounds 30%, accuracy 30%
-        # We normalize dynamically for the leaderboard view
+        if not self.client_cumulative:
+            return []
         max_images = max([c.images_contributed for c in self.client_cumulative.values()] + [1])
         max_rounds = max([c.rounds_participated for c in self.client_cumulative.values()] + [1])
-        
+
         ranked = []
         for c in self.client_cumulative.values():
             img_score = c.images_contributed / max_images
             rnd_score = c.rounds_participated / max_rounds
             acc_score = c.avg_local_accuracy
-            
             score = (img_score * 0.4) + (rnd_score * 0.3) + (acc_score * 0.3)
-            
             ranked.append({
                 "client_id": c.client_id,
                 "nickname": c.nickname,
@@ -88,6 +82,49 @@ class MetricsStore:
                 "accuracy": round(c.avg_local_accuracy, 4),
                 "score": round(score, 4)
             })
-            
         ranked.sort(key=lambda x: x["score"], reverse=True)
         return ranked
+
+    def get_summary(self) -> dict:
+        if not self.history:
+            return {"total_rounds": 0, "total_participants": 0, "total_images": 0, "latest_accuracy": 0, "latest_loss": 0}
+        latest = self.history[-1]
+        total_images = sum(c.images_contributed for c in self.client_cumulative.values())
+        return {
+            "total_rounds": len(self.history),
+            "total_participants": len(self.client_cumulative),
+            "total_images": total_images,
+            "latest_accuracy": round(latest.global_accuracy, 4),
+            "latest_loss": round(latest.global_loss, 4),
+        }
+
+    def generate_report(self) -> dict:
+        summary = self.get_summary()
+        duration = 0
+        if len(self.history) >= 2:
+            duration = self.history[-1].timestamp - self.history[0].timestamp
+
+        accuracy_trend = [{"round": h.round, "accuracy": round(h.global_accuracy, 4), "loss": round(h.global_loss, 4)} for h in self.history]
+
+        return {
+            "session": {
+                "total_rounds": summary["total_rounds"],
+                "total_participants": summary["total_participants"],
+                "total_images_trained": summary["total_images"],
+                "duration_seconds": round(duration, 1),
+                "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            },
+            "results": {
+                "final_accuracy": summary["latest_accuracy"],
+                "final_loss": summary["latest_loss"],
+                "accuracy_trend": accuracy_trend,
+            },
+            "privacy": {
+                "aggregation_method": "Trimmed Mean",
+                "differential_privacy": True,
+                "gradient_clipping": True,
+                "data_transmitted": "model_weights_only",
+            },
+            "leaderboard": self.get_leaderboard(),
+            "per_round_history": [r.model_dump() for r in self.history],
+        }

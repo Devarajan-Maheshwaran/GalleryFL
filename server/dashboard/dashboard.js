@@ -1,140 +1,270 @@
 let ws;
 let accChart, lossChart;
-let accData = [], lossData = [], labels = [];
+let accData = [], lossData = [], roundLabels = [];
 let clients = {};
+let isTraining = false;
 
-const colorPrimary = '#D4845A';
-const colorGold = '#E8B87A';
-const colorText = '#3D2B1F';
-const colorGrid = 'rgba(122, 99, 85, 0.1)';
+const COLORS = {
+    primary: '#E8B87A',
+    gold: '#D4845A',
+    text: '#333333',
+    grid: 'rgba(0, 0, 0, 0.04)',
+    fill: 'rgba(232, 184, 122, 0.08)',
+    fillLoss: 'rgba(212, 132, 90, 0.08)',
+};
 
 function initCharts() {
-    const commonOptions = {
+    const baseOptions = {
         responsive: true,
         maintainAspectRatio: false,
-        animation: { duration: 500, easing: 'easeOutQuart' },
+        animation: { duration: 400, easing: 'easeOutQuart' },
         scales: {
-            x: { grid: { color: colorGrid }, ticks: { color: colorText } },
-            y: { grid: { color: colorGrid }, ticks: { color: colorText } }
+            x: { grid: { color: COLORS.grid }, ticks: { color: COLORS.text, font: { family: 'JetBrains Mono', size: 11 } } },
+            y: { grid: { color: COLORS.grid }, ticks: { color: COLORS.text, font: { family: 'JetBrains Mono', size: 11 } } }
         },
         plugins: {
-            legend: { labels: { color: colorText, font: { family: 'Outfit' } } }
+            legend: { display: false }
         }
     };
 
-    const ctxAcc = document.getElementById('accChart').getContext('2d');
-    accChart = new Chart(ctxAcc, {
+    accChart = new Chart(document.getElementById('accChart').getContext('2d'), {
         type: 'line',
         data: {
-            labels: labels,
+            labels: roundLabels,
             datasets: [{
                 label: 'Accuracy',
                 data: accData,
-                borderColor: colorPrimary,
-                backgroundColor: 'rgba(212, 132, 90, 0.1)',
+                borderColor: COLORS.primary,
+                backgroundColor: COLORS.fill,
                 fill: true,
-                tension: 0.4
+                tension: 0.3,
+                pointRadius: 3,
+                pointBackgroundColor: COLORS.primary,
+                borderWidth: 2,
             }]
         },
-        options: { ...commonOptions, scales: { ...commonOptions.scales, y: { ...commonOptions.scales.y, min: 0, max: 1 } } }
+        options: { ...baseOptions, scales: { ...baseOptions.scales, y: { ...baseOptions.scales.y, min: 0, max: 1 } } }
     });
 
-    const ctxLoss = document.getElementById('lossChart').getContext('2d');
-    lossChart = new Chart(ctxLoss, {
+    lossChart = new Chart(document.getElementById('lossChart').getContext('2d'), {
         type: 'line',
         data: {
-            labels: labels,
+            labels: roundLabels,
             datasets: [{
                 label: 'Loss',
                 data: lossData,
-                borderColor: colorGold,
-                backgroundColor: 'rgba(232, 184, 122, 0.1)',
+                borderColor: COLORS.gold,
+                backgroundColor: COLORS.fillLoss,
                 fill: true,
-                tension: 0.4
+                tension: 0.3,
+                pointRadius: 3,
+                pointBackgroundColor: COLORS.gold,
+                borderWidth: 2,
             }]
         },
-        options: commonOptions
+        options: baseOptions
     });
 }
 
 function connectWS() {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${protocol}//${location.host}/ws/feed?client_id=dashboard`);
-    
+
     ws.onopen = () => {
         document.getElementById('ws-status-dot').className = 'nm-dot nm-dot--online';
         document.getElementById('ws-status-text').innerText = 'Connected';
     };
-    
+
     ws.onclose = () => {
         document.getElementById('ws-status-dot').className = 'nm-dot nm-dot--offline';
         document.getElementById('ws-status-text').innerText = 'Disconnected';
-        setTimeout(connectWS, 2000);
+        setTimeout(connectWS, 3000);
     };
-    
+
     ws.onmessage = (event) => {
         const msg = JSON.parse(event.data);
-        handleWSEvent(msg.type, msg.data);
+        routeEvent(msg.type, msg.data);
     };
 }
 
-function handleWSEvent(type, data) {
-    if (type === 'round_started') {
-        document.getElementById('phase-badge').innerText = `Training Round ${data.round}`;
-        document.getElementById('phase-badge').style.color = 'var(--accent-primary)';
-        document.getElementById('round-progress-label').innerText = `Round ${data.round} / ${data.total_rounds}`;
-        document.getElementById('round-progress-fill').style.width = `${(data.round / data.total_rounds) * 100}%`;
-    } 
-    else if (type === 'round_completed') {
-        // Update charts
-        labels.push(data.round);
-        accData.push(data.global_accuracy);
-        lossData.push(data.global_loss);
-        if (labels.length > 50) { labels.shift(); accData.shift(); lossData.shift(); }
-        accChart.update();
-        lossChart.update();
-        refreshLeaderboard();
-    }
-    else if (type === 'training_complete') {
-        document.getElementById('phase-badge').innerText = 'Complete';
-        document.getElementById('phase-badge').style.color = 'var(--success)';
-        document.getElementById('round-progress-fill').style.width = '100%';
+function routeEvent(type, data) {
+    switch (type) {
+        case 'round_started':
+            onRoundStart(data);
+            break;
+        case 'round_completed':
+            onRoundComplete(data);
+            break;
+        case 'training_complete':
+            onTrainingComplete(data);
+            break;
+        case 'client_connected':
+            clients[data.client_id] = data;
+            renderClients();
+            break;
+        case 'client_disconnected':
+            delete clients[data.client_id];
+            renderClients();
+            break;
+        case 'update_received':
+            highlightClient(data.client_id);
+            break;
     }
 }
 
-async function refreshStatus() {
-    const res = await fetch('/api/training/status');
-    const data = await res.json();
-    document.getElementById('model-version').innerText = `Model v${data.model_version}`;
-    document.getElementById('client-count').innerText = data.connected_clients;
+function onRoundStart(data) {
+    isTraining = true;
+    document.getElementById('phase-badge').innerText = `Round ${data.round}`;
+    document.getElementById('phase-badge').style.color = 'var(--accent-primary)';
+    document.getElementById('round-progress-label').innerText = `Round ${data.round} / ${data.total_rounds}`;
+    document.getElementById('round-progress-fill').style.width = `${(data.round / data.total_rounds) * 100}%`;
+    document.getElementById('btn-start').style.display = 'none';
+    document.getElementById('btn-stop').style.display = '';
+    setInputsDisabled(true);
 }
 
-async function refreshLeaderboard() {
-    const res = await fetch('/api/metrics/leaderboard');
-    const data = await res.json();
-    const tbody = document.querySelector('#leaderboard-table tbody');
-    tbody.innerHTML = '';
-    
-    data.leaderboard.forEach((client, index) => {
-        const tr = document.createElement('tr');
-        if(index === 0) tr.className = 'rank-1';
-        tr.innerHTML = `
-            <td>#${index + 1}</td>
-            <td>${client.nickname || client.client_id.substring(0,8)}</td>
-            <td>${client.images}</td>
-            <td class="mono">${client.score}</td>
+function onRoundComplete(data) {
+    roundLabels.push(`R${data.round}`);
+    accData.push(data.global_accuracy);
+    lossData.push(data.global_loss);
+
+    if (roundLabels.length > 50) {
+        roundLabels.shift();
+        accData.shift();
+        lossData.shift();
+    }
+
+    accChart.update();
+    lossChart.update();
+    refreshLeaderboard();
+    refreshStatus();
+}
+
+function onTrainingComplete(data) {
+    isTraining = false;
+    document.getElementById('phase-badge').innerText = 'Complete';
+    document.getElementById('phase-badge').style.color = 'var(--success)';
+    document.getElementById('round-progress-fill').style.width = '100%';
+    document.getElementById('btn-start').style.display = '';
+    document.getElementById('btn-stop').style.display = 'none';
+    document.getElementById('btn-export-model').disabled = false;
+    document.getElementById('btn-export-report').disabled = false;
+    setInputsDisabled(false);
+}
+
+function renderClients() {
+    const list = document.getElementById('client-list');
+    const ids = Object.keys(clients);
+
+    if (ids.length === 0) {
+        list.innerHTML = '<p class="empty-state">No clients connected</p>';
+        return;
+    }
+
+    list.innerHTML = '';
+    ids.forEach(id => {
+        const c = clients[id];
+        const card = document.createElement('div');
+        card.className = 'client-card';
+        card.id = `client-${id}`;
+        card.innerHTML = `
+            <div class="client-info">
+                <h4>${c.nickname || id.substring(0, 8)}</h4>
+                <p>${c.device_model || 'Unknown device'}</p>
+            </div>
+            <span class="nm-dot nm-dot--online"></span>
         `;
-        tbody.appendChild(tr);
+        list.appendChild(card);
     });
 }
 
-function startTraining() {
-    // In a real app this would call an API endpoint to trigger training start on server
-    // For now, since FLCoordinator auto-starts or is triggered via API, we just alert.
-    alert("Training initiation would happen here via REST call to server.");
+function highlightClient(clientId) {
+    const el = document.getElementById(`client-${clientId}`);
+    if (el) {
+        el.style.boxShadow = '0 0 0 2px var(--accent-gold)';
+        setTimeout(() => { el.style.boxShadow = 'var(--nm-raised)'; }, 800);
+    }
 }
 
-// Uptime timer
+function setInputsDisabled(disabled) {
+    document.querySelectorAll('.control-inputs .nm-input').forEach(inp => inp.disabled = disabled);
+}
+
+async function refreshStatus() {
+    try {
+        const res = await fetch('/api/training/status');
+        const data = await res.json();
+        document.getElementById('model-version').innerText = `v${data.model_version}`;
+        document.getElementById('model-ver-display').innerText = data.model_version;
+        document.getElementById('client-count').innerText = data.connected_clients;
+        document.getElementById('registered-count').innerText = data.registered_clients;
+        document.getElementById('param-count').innerText = formatNumber(data.total_parameters);
+    } catch (e) {}
+}
+
+async function refreshLeaderboard() {
+    try {
+        const res = await fetch('/api/metrics/leaderboard');
+        const data = await res.json();
+        const tbody = document.querySelector('#leaderboard-table tbody');
+        tbody.innerHTML = '';
+
+        data.leaderboard.forEach((c, i) => {
+            const tr = document.createElement('tr');
+            if (i === 0) tr.className = 'rank-1';
+            tr.innerHTML = `
+                <td>${i + 1}</td>
+                <td>${c.nickname || c.client_id.substring(0, 8)}</td>
+                <td class="mono">${c.images}</td>
+                <td class="mono">${c.rounds}</td>
+                <td class="mono">${c.score}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+    } catch (e) {}
+}
+
+async function startTraining() {
+    try {
+        const res = await fetch('/api/training/start', { method: 'POST' });
+        const data = await res.json();
+        if (data.status !== 'started') {
+            document.getElementById('phase-badge').innerText = data.status;
+        }
+    } catch (e) {}
+}
+
+async function stopTraining() {
+    try {
+        await fetch('/api/training/stop', { method: 'POST' });
+    } catch (e) {}
+}
+
+async function loadHistory() {
+    try {
+        const res = await fetch('/api/metrics/history');
+        const data = await res.json();
+        if (data.history && data.history.length > 0) {
+            data.history.forEach(h => {
+                roundLabels.push(`R${h.round}`);
+                accData.push(h.global_accuracy);
+                lossData.push(h.global_loss);
+            });
+            accChart.update();
+            lossChart.update();
+            document.getElementById('btn-export-model').disabled = false;
+            document.getElementById('btn-export-report').disabled = false;
+        }
+    } catch (e) {}
+}
+
+function formatNumber(n) {
+    if (!n) return '-';
+    if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+    return n.toString();
+}
+
 let startTime = Date.now();
 setInterval(() => {
     let diff = Math.floor((Date.now() - startTime) / 1000);
@@ -144,10 +274,41 @@ setInterval(() => {
     document.getElementById('uptime').innerText = `${h}:${m}:${s}`;
 }, 1000);
 
+function initNavigation() {
+    document.querySelectorAll('.sidebar__nav a').forEach(link => {
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            const target = document.getElementById(link.getAttribute('href').substring(1));
+            if (target) target.scrollIntoView({ behavior: 'smooth' });
+        });
+    });
+
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                document.querySelectorAll('.sidebar__nav a').forEach(a => a.classList.remove('active'));
+                const active = document.querySelector(`.sidebar__nav a[href="#${entry.target.id}"]`);
+                if (active) active.classList.add('active');
+            }
+        });
+    }, { rootMargin: '-10% 0px -80% 0px' });
+
+    document.querySelectorAll('.main-content > section').forEach(s => observer.observe(s));
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     initCharts();
     connectWS();
     refreshStatus();
     refreshLeaderboard();
+    loadHistory();
+
+    document.getElementById('btn-start').addEventListener('click', startTraining);
+    document.getElementById('btn-stop').addEventListener('click', stopTraining);
+    document.getElementById('btn-export-model').addEventListener('click', () => window.open('/api/export/model', '_blank'));
+    document.getElementById('btn-export-report').addEventListener('click', () => window.open('/api/export/report', '_blank'));
+    document.getElementById('lan-ip').innerText = window.location.host;
+
+    initNavigation();
     setInterval(refreshStatus, 5000);
 });

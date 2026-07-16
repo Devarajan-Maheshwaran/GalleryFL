@@ -1,24 +1,40 @@
 {
+  "version": 1,
   "categories": [
     {
+      "id": "people",
       "name": "People",
-      "tags": ["group", "portrait", "selfie", "child", "crowd"]
+      "children": ["selfie", "group_photo", "portrait", "crowd"]
     },
     {
+      "id": "places",
       "name": "Places",
-      "tags": ["beach", "mountain", "city", "forest", "indoor", "architecture"]
+      "children": ["beach", "mountain", "city", "indoor", "rural"]
     },
     {
+      "id": "activities",
       "name": "Activities",
-      "tags": ["sports", "travel", "party", "hiking", "dining"]
+      "children": ["sports", "cooking", "celebration", "work", "travel"]
     },
     {
+      "id": "objects",
       "name": "Objects",
-      "tags": ["food", "vehicle", "animal", "pet", "electronics", "document"]
+      "children": ["food", "vehicle", "gadget", "clothing", "art"]
     },
     {
+      "id": "documents",
+      "name": "Documents",
+      "children": ["screenshot", "receipt", "id_card", "handwritten", "printed"]
+    },
+    {
+      "id": "nature",
       "name": "Nature",
-      "tags": ["sunset", "water", "flower", "sky", "landscape"]
+      "children": ["landscape", "animal", "plant", "sky", "water"]
+    },
+    {
+      "id": "events",
+      "name": "Events",
+      "children": ["wedding", "birthday", "concert", "graduation", "holiday"]
     }
   ]
 }

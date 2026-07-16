@@ -39,29 +39,21 @@ def validate_update(
     update_norm: float,
     historical_norms: List[float]
 ) -> Tuple[bool, str]:
-    """
-    Validates a client update for anomaly detection/poisoning.
-    """
-    # 1. Check weight shapes
     if len(update_weights) != len(global_weights):
-        return False, "Weight layer count mismatch"
-        
+        return False, "Layer count mismatch"
+
     for u_w, g_w in zip(update_weights, global_weights):
         if u_w.shape != g_w.shape:
-            return False, "Weight shape mismatch"
-            
-    # 2. Check for NaN/Inf
-    for w in update_weights:
+            return False, f"Shape mismatch: {u_w.shape} vs {g_w.shape}"
+
+    for i, w in enumerate(update_weights):
         if not np.isfinite(w).all():
-            return False, "Contains NaN or Inf values"
-            
-    # 3. Check update norm against historical distribution
+            return False, f"Layer {i} contains NaN or Inf"
+
     if len(historical_norms) > 5:
-        mean_norm = np.mean(historical_norms)
-        std_norm = np.std(historical_norms)
-        
-        # Reject if > 3 standard deviations from mean
-        if update_norm > mean_norm + (3 * std_norm):
-            return False, f"Norm {update_norm:.4f} exceeds 3-sigma bound"
-            
+        mean_norm = np.mean(historical_norms[-50:])
+        std_norm = np.std(historical_norms[-50:])
+        if std_norm > 0 and update_norm > mean_norm + (3 * std_norm):
+            return False, f"Norm {update_norm:.2f} exceeds 3-sigma ({mean_norm:.2f} + 3*{std_norm:.2f})"
+
     return True, ""
