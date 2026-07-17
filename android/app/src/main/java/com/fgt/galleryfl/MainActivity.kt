@@ -68,14 +68,15 @@ fun MainScreen(
                     val response = apiService.getCurrentModel()
                     val encodedWeights = response.string()
                     val globalWeights = com.fgt.galleryfl.data.network.WeightSerializer.deserialize(encodedWeights)
+                    val numClasses = globalWeights[2].size / 256
 
                     val featuresList = List(50) { FloatArray(1024) { kotlin.random.Random.nextFloat() * 2 - 1 } }
                     val targetsList = List(50) {
-                        FloatArray(20) { if (kotlin.random.Random.nextFloat() > 0.9f) 1f else 0f }
+                        FloatArray(numClasses) { if (kotlin.random.Random.nextFloat() > 0.9f) 1f else 0f }
                     }
 
                     val trainer = com.fgt.galleryfl.data.ml.LocalTrainer(
-                        com.fgt.galleryfl.data.ml.ClassificationHead(20)
+                        com.fgt.galleryfl.data.ml.ClassificationHead(numClasses)
                     )
                     val result = trainer.train(featuresList, targetsList, globalWeights, epochs = 3)
 

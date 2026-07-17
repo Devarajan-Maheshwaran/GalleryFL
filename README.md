@@ -1,63 +1,91 @@
-# GalleryFL: Federated Gallery Tags
+# FGT - Federated Gallery Tags
+### Self-hosted federated photo intelligence
 
-GalleryFL is a complete, end-to-end implementation of a Federated Learning (FL) system designed to train image classification models directly on edge devices (Android) while preserving user privacy. 
+FGT is a self-hosted platform for privacy-preserving, on-device machine learning. It allows you to analyze and tag your mobile gallery photos without your images ever leaving your device. A local federated learning server orchestrates model updates, ensuring that while the collective AI model improves, your raw photos remain completely private.
 
-Traditional machine learning requires centralizing large datasets, which poses significant privacy risks when dealing with personal photos. GalleryFL solves this by sending the model to the data instead of sending the data to the model. Devices train the model locally using their own galleries and only transmit the learned weight updates (gradients) to a central server.
+## Downloads
+Download the latest pre-compiled releases directly from GitHub (these links will be active once the release is published):
+- [Download FGT Server ZIP](https://github.com/<owner>/<repo>/releases/latest/download/FGT-server.zip)
+- [Download Android APK](https://github.com/<owner>/<repo>/releases/latest/download/FGT-client-release.apk)
 
-## Architecture
+---
 
-The system consists of three main components:
+## Features
+- **Local-Only Inference:** All image scanning and tag generation happens directly on your Android device.
+- **Federated Learning:** Only small, aggregated model updates (gradients) are sent to the server. Your photos never touch the network.
+- **Self-Hosted Dashboard:** Monitor the health of your federated network, track participating devices, and observe model improvements in real-time.
+- **Full Control:** Export the final, trained model directly from the dashboard, or download a comprehensive training report.
+- **Transparent Undo/Revert:** Fully revert model updates from the app to maintain absolute control over the classification results.
 
-1. **FastAPI Coordination Server**
-   - Coordinates FL training rounds and manages client connections via WebSockets.
-   - Aggregates local updates using a Trimmed Mean algorithm to defend against malicious or outlier updates.
-   - Implements strict validation checks (norm constraints and shape verification) for incoming updates.
-   - Provides a real-time web dashboard to monitor training metrics (loss, accuracy, client contributions).
+## Architecture Overview
+FGT consists of two main components:
+1. **FGT Server (Python/FastAPI):** Orchestrates the federated learning rounds, aggregates client updates, and hosts the real-time monitoring dashboard.
+2. **FGT Client (Android):** Connects to the server over a local LAN, uses the global model to scan your local photo gallery, performs on-device training, and submits weight updates back to the server.
 
-2. **Android Client Application**
-   - Built with Jetpack Compose and Kotlin Coroutines.
-   - Implements local training using a pre-trained MobileNetV3 feature extractor and a trainable classification head.
-   - Utilizes Differential Privacy (DP) via Gaussian noise injection and Gradient Clipping (L2 Norm) before transmitting any data.
-   - Communicates seamlessly with the server via OkHttp WebSockets and Retrofit REST APIs.
+---
 
-3. **Python Simulator Client**
-   - A robust `mock_client.py` for testing and simulating large-scale federated networks without needing physical Android devices.
-   - Simulates local training loops, applies FedProx-style proximal terms, and serializes gradients exactly like the Android client.
+## Privacy & Permissions
 
-## Security and Privacy Features
+### Privacy First
+FGT is designed to keep your data private:
+- No photos or metadata are ever uploaded.
+- The server only receives numerical weight updates for the ML model.
+- You can review the exact size of the payload before sending it.
 
-- **Data Locality:** Raw images and metadata never leave the device.
-- **Differential Privacy (DP):** Gaussian noise is injected into weight updates to prevent inference attacks that might attempt to reconstruct local data.
-- **Gradient Clipping:** Bounds the maximum impact any single client can have on the global model, ensuring stability.
-- **Anomaly Detection:** The server evaluates incoming weight updates against historical norms using a 3-sigma rule, rejecting poisoned or corrupted updates.
+### Android Permissions
+To function, the Android app requires:
+- **Storage/Photos Access:** To read and analyze images stored on your device.
+- **Network Access:** To connect to the local FGT server for fetching the latest model and submitting updates.
 
-## Setup Instructions
+---
 
-### Server
-1. Navigate to the `server` directory.
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Prepare the base model:
-   ```bash
-   python prep_model.py
-   ```
-4. Run the server:
-   ```bash
-   python run_server.py
-   ```
-5. Access the dashboard at `http://localhost:8080/dashboard`.
+## Quick Start
 
-### Android Client
-1. Open the `android` folder in Android Studio.
-2. Build and run the application on an emulator or physical device.
-3. In the application, enter the server URL (e.g., `http://10.0.2.2:8080` for emulator) and join the training session.
+### 1. Server Setup
+Download and extract the `FGT-server.zip`.
 
-## Testing
-
-The server includes a suite of integration tests.
-```bash
-cd server
-pytest test_integration.py
+**On Windows:**
+Double-click `run_server.bat` or run it from the command prompt:
+```cmd
+run_server.bat
 ```
+
+**On Linux/macOS:**
+```bash
+chmod +x run_server.sh
+./run_server.sh
+```
+
+The script will automatically create a virtual environment, install dependencies, print the LAN IP address of your server, and open the dashboard at `http://localhost:8000/dashboard/`.
+
+![Dashboard Screenshot](docs/dashboard.png)
+
+### 2. Android Client Setup
+Download and install the `FGT-client-release.apk` on your Android device.
+
+1. Open the app and grant the necessary photo access permissions.
+2. On the **Connect** screen, enter the LAN IP address provided by the server script (e.g., `http://192.168.1.100:8000`).
+3. Enter the Access Code displayed on the server dashboard (or the default).
+4. Tap **Join Training**.
+
+![Android Screenshot](docs/android-home.png)
+
+### 3. Usage
+Once connected:
+- **Scan Gallery:** The app will analyze your local photos using the current model.
+- **Train:** Based on the analysis and your adjustments, the app computes updates and sends them to the server when a training round begins.
+- **Export:** In the server dashboard, use the **Export Model** or **Export Report** buttons to download the trained `.tflite` model or the full metrics history.
+
+---
+
+## Building from Source
+
+If you prefer to build the APK yourself instead of downloading the pre-compiled release:
+
+1. Open the `android` folder in Android Studio.
+2. Build a debug APK: `Build > Build Bundle(s) / APK(s) > Build APK(s)`.
+3. To build a signed release APK, configure your keystore via Gradle properties or environment variables, and run:
+   ```bash
+   ./gradlew assembleRelease
+   ```
+*(Note: Do not commit your private keystore credentials to the repository.)*
