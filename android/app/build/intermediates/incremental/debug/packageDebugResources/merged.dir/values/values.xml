@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="app_name">GalleryFL</string>
-    <style name="Theme.GalleryFL" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:statusBarColor">#F5EFEB</item>
-    </style>
-</resources>

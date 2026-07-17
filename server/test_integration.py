@@ -1,8 +1,9 @@
-import asyncio
 import httpx
 import pytest
 
 SERVER_URL = "http://localhost:8080"
+TOKEN = "dev-token-change-me"
+HEADERS = {"X-FGT-Token": TOKEN}
 
 @pytest.mark.asyncio
 async def test_server_status():
@@ -19,13 +20,23 @@ async def test_register_client():
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{SERVER_URL}/api/register",
-            json={"device_model": "Test", "nickname": "TestUser"}
+            json={"device_model": "Test", "nickname": "TestUser"},
+            headers=HEADERS
         )
         assert resp.status_code == 200
         data = resp.json()
         assert "client_id" in data
         assert data["status"] == "registered"
         assert "model_version" in data
+
+@pytest.mark.asyncio
+async def test_register_without_token():
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{SERVER_URL}/api/register",
+            json={"device_model": "Test", "nickname": "NoToken"}
+        )
+        assert resp.status_code == 401
 
 @pytest.mark.asyncio
 async def test_get_model():

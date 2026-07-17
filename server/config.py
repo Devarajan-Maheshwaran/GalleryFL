@@ -15,8 +15,9 @@ class ServerConfig(BaseModel):
     dp_delta: float = 1e-5
     max_grad_norm: float = 1.0
     convergence_threshold: float = 0.001
-    
-    # Path configuration
+    server_token: str = os.environ.get("FGT_SERVER_TOKEN", "dev-token-change-me")
+
+
     model_path: str = "models/base_model.tflite"
     validation_dir: str = "validation_data/"
     output_dir: str = "output/"

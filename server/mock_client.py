@@ -8,7 +8,15 @@ import zlib
 import struct
 import argparse
 
-SHAPES = [(960, 256), (256,), (256, 20), (20,)]
+LAYER_SCHEMA = [
+    ("w1", (1024, 256)),
+    ("b1", (256,)),
+    ("w2", (256, 20)),
+    ("b2", (20,)),
+]
+SHAPES = [shape for _, shape in LAYER_SCHEMA]
+
+DEFAULT_TOKEN = "dev-token-change-me"
 
 def serialize_weights(weights):
     chunks = []
@@ -42,18 +50,23 @@ def local_train(weights, num_samples, lr, mu, epochs):
     return trained, loss, acc
 
 class FLClient:
-    def __init__(self, server_url, nickname):
+    def __init__(self, server_url, nickname, token):
         self.server_url = server_url
         self.ws_url = server_url.replace("http", "ws") + "/ws/feed"
         self.nickname = nickname
+        self.token = token
         self.client_id = None
         self.weights = [np.zeros(s, dtype=np.float32) for s in SHAPES]
+
+    def _headers(self):
+        return {"X-FGT-Token": self.token}
 
     async def register(self):
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{self.server_url}/api/register",
-                json={"device_model": "Python Simulator", "nickname": self.nickname}
+                json={"device_model": "Python Simulator", "nickname": self.nickname},
+                headers=self._headers()
             )
             data = resp.json()
             self.client_id = data["client_id"]
@@ -75,7 +88,8 @@ class FLClient:
                     "num_samples": num_samples,
                     "local_loss": loss,
                     "local_accuracy": acc
-                }
+                },
+                headers=self._headers()
             )
             print(f"[{self.nickname}] Round {round_num}: loss={loss:.4f} acc={acc:.4f} ({resp.status_code})")
 
@@ -113,9 +127,10 @@ async def main():
     parser = argparse.ArgumentParser(description="FGT FL Client Simulator")
     parser.add_argument("--count", type=int, default=2)
     parser.add_argument("--server", type=str, default="http://localhost:8080")
+    parser.add_argument("--token", type=str, default=DEFAULT_TOKEN)
     args = parser.parse_args()
 
-    clients = [FLClient(args.server, f"Client-{i+1}") for i in range(args.count)]
+    clients = [FLClient(args.server, f"Client-{i+1}", args.token) for i in range(args.count)]
     await asyncio.gather(*[c.run() for c in clients])
 
 if __name__ == "__main__":

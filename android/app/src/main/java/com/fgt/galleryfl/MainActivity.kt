@@ -13,6 +13,9 @@ import androidx.compose.ui.unit.dp
 import com.fgt.galleryfl.ui.theme.FGTColors
 import com.fgt.galleryfl.ui.components.NeuSurface
 import com.fgt.galleryfl.data.network.FGTWebSocketClient
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import java.util.UUID
 
@@ -26,7 +29,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme {
-                MainScreen(wsClient, defaultServerUrl, clientId)
+                MainScreen(wsClient, httpClient, defaultServerUrl, clientId)
             }
         }
     }
@@ -39,39 +42,43 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen(wsClient: FGTWebSocketClient, defaultServerUrl: String, clientId: String) {
+fun MainScreen(
+    wsClient: FGTWebSocketClient,
+    httpClient: OkHttpClient,
+    defaultServerUrl: String,
+    clientId: String
+) {
     var statusText by remember { mutableStateOf("Ready to connect") }
     var isConnected by remember { mutableStateOf(false) }
     var currentServerUrl by remember { mutableStateOf(defaultServerUrl) }
+    var accessCode by remember { mutableStateOf("dev-token-change-me") }
     var currentRound by remember { mutableIntStateOf(0) }
     var isTraining by remember { mutableStateOf(false) }
 
     val scope = rememberCoroutineScope()
-    
+
     DisposableEffect(Unit) {
         wsClient.onUpdateRequested = { round ->
             currentRound = round
             isTraining = true
             statusText = "Round $round: Training locally..."
-            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            scope.launch(Dispatchers.IO) {
                 try {
                     val apiService = com.fgt.galleryfl.data.network.RetrofitClient.getApiService(currentServerUrl, httpClient)
                     val response = apiService.getCurrentModel()
                     val encodedWeights = response.string()
-                    val expectedSizes = listOf(960 * 256, 256, 256 * 20, 20)
-                    val globalWeights = com.fgt.galleryfl.data.network.WeightSerializer.deserialize(encodedWeights, expectedSizes)
+                    val globalWeights = com.fgt.galleryfl.data.network.WeightSerializer.deserialize(encodedWeights)
 
-                    // Simulating local data extraction to avoid storage permission complexities in a demo
-                    val featuresList = List(50) { FloatArray(960) { kotlin.random.Random.nextFloat() * 2 - 1 } }
-                    val targetsList = List(50) { 
+                    val featuresList = List(50) { FloatArray(1024) { kotlin.random.Random.nextFloat() * 2 - 1 } }
+                    val targetsList = List(50) {
                         FloatArray(20) { if (kotlin.random.Random.nextFloat() > 0.9f) 1f else 0f }
                     }
-                    
+
                     val trainer = com.fgt.galleryfl.data.ml.LocalTrainer(
                         com.fgt.galleryfl.data.ml.ClassificationHead(20)
                     )
                     val result = trainer.train(featuresList, targetsList, globalWeights, epochs = 3)
-                    
+
                     val serializedUpdate = com.fgt.galleryfl.data.network.WeightSerializer.serialize(result.updatedWeights)
                     val updateRequest = com.fgt.galleryfl.data.network.ClientUpdateRequest(
                         client_id = clientId,
@@ -80,13 +87,13 @@ fun MainScreen(wsClient: FGTWebSocketClient, defaultServerUrl: String, clientId:
                         local_loss = result.localLoss,
                         local_accuracy = result.localAccuracy
                     )
-                    apiService.submitUpdate(updateRequest)
-                    
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    apiService.submitUpdate(accessCode, updateRequest)
+
+                    withContext(Dispatchers.Main) {
                         statusText = "Round $round: Update submitted"
                     }
                 } catch (e: Exception) {
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    withContext(Dispatchers.Main) {
                         statusText = "Error: ${e.message}"
                         isTraining = false
                     }
@@ -135,6 +142,21 @@ fun MainScreen(wsClient: FGTWebSocketClient, defaultServerUrl: String, clientId:
                 modifier = Modifier.fillMaxWidth()
             )
 
+            Spacer(modifier = Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = accessCode,
+                onValueChange = { accessCode = it },
+                label = { Text("Access Code", color = FGTColors.TextSecondary) },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = FGTColors.AccentPrimary,
+                    unfocusedBorderColor = FGTColors.TextSecondary,
+                    focusedTextColor = FGTColors.TextPrimary,
+                    unfocusedTextColor = FGTColors.TextPrimary
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+
             Spacer(modifier = Modifier.height(16.dp))
 
             NeuSurface {
@@ -168,10 +190,27 @@ fun MainScreen(wsClient: FGTWebSocketClient, defaultServerUrl: String, clientId:
 
             Button(
                 onClick = {
-                    statusText = "Connecting..."
-                    wsClient.connect(currentServerUrl, clientId)
-                    isConnected = true
-                    statusText = "Connected. Waiting for server..."
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            val apiService = com.fgt.galleryfl.data.network.RetrofitClient.getApiService(currentServerUrl, httpClient)
+                            val regResp = apiService.register(
+                                accessCode,
+                                com.fgt.galleryfl.data.network.RegisterRequest(
+                                    device_model = android.os.Build.MODEL,
+                                    nickname = "Android-${clientId.take(6)}"
+                                )
+                            )
+                            withContext(Dispatchers.Main) {
+                                wsClient.connect(currentServerUrl, regResp.client_id)
+                                isConnected = true
+                                statusText = "Registered. Waiting for training..."
+                            }
+                        } catch (e: Exception) {
+                            withContext(Dispatchers.Main) {
+                                statusText = "Connection failed: ${e.message}"
+                            }
+                        }
+                    }
                 },
                 enabled = !isConnected,
                 colors = ButtonDefaults.buttonColors(

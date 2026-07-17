@@ -1,4 +1,5 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+import asyncio
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Header, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, Response, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,14 +9,14 @@ import logging
 import os
 import uuid
 import numpy as np
-from typing import Dict
+from typing import Optional
 
 from config import ServerConfig
 from metrics import MetricsStore
 from model_manager import ModelManager
 from fl_coordinator import FLCoordinator
 from ws_manager import ws_manager
-from security import validate_update, AuditLog, TrustScorer
+from security import validate_update, AuditLog, TrustScorer, RateLimiter
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s - %(message)s")
 
@@ -37,6 +38,7 @@ model_manager = ModelManager()
 coordinator = FLCoordinator(config, metrics_store, model_manager)
 audit_log = AuditLog()
 trust_scorer = TrustScorer()
+rate_limiter = RateLimiter()
 historical_norms: list = []
 
 class RegisterRequest(BaseModel):
@@ -50,7 +52,11 @@ class ClientUpdateRequest(BaseModel):
     local_loss: float
     local_accuracy: float
 
-@app.post("/api/register")
+async def verify_token(x_fgt_token: Optional[str] = Header(None)):
+    if x_fgt_token != config.server_token:
+        raise HTTPException(status_code=401, detail="Invalid or missing access token")
+
+@app.post("/api/register", dependencies=[Depends(verify_token)])
 async def register_client(req: RegisterRequest):
     client_id = str(uuid.uuid4())
     coordinator.register_client(client_id, req.model_dump())
@@ -62,11 +68,13 @@ async def register_client(req: RegisterRequest):
 async def get_current_model():
     return Response(content=model_manager.get_serialized_weights(), media_type="text/plain")
 
-@app.post("/api/training/submit-update")
+@app.post("/api/training/submit-update", dependencies=[Depends(verify_token)])
 async def submit_update(req: ClientUpdateRequest):
-    shapes = model_manager.get_weight_shapes()
+    if not rate_limiter.check(req.client_id):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded: max 1 update per 5 seconds")
+
     try:
-        weights = model_manager.deserialize_weights(req.weights, shapes)
+        weights = model_manager.deserialize_weights(req.weights)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Weight decode failed: {str(e)}")
 
@@ -116,7 +124,6 @@ async def get_summary():
 async def start_training():
     if coordinator.is_training:
         return {"status": "already_training"}
-    import asyncio
     asyncio.create_task(coordinator.start_training())
     return {"status": "started"}
 

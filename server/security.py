@@ -57,3 +57,16 @@ def validate_update(
             return False, f"Norm {update_norm:.2f} exceeds 3-sigma ({mean_norm:.2f} + 3*{std_norm:.2f})"
 
     return True, ""
+
+class RateLimiter:
+    def __init__(self, window_seconds: float = 5.0):
+        self.window = window_seconds
+        self.last_update: Dict[str, float] = {}
+
+    def check(self, client_id: str) -> bool:
+        now = time.time()
+        last = self.last_update.get(client_id, 0.0)
+        if now - last < self.window:
+            return False
+        self.last_update[client_id] = now
+        return True

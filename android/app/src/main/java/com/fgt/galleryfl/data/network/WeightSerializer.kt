@@ -7,17 +7,25 @@ import java.util.zip.Deflater
 import java.util.zip.Inflater
 
 object WeightSerializer {
-    /**
-     * Serializes weights into Little-Endian bytes, zlib compressed, base64 encoded.
-     */
+
+    val LAYER_SCHEMA: List<Pair<String, Int>> = listOf(
+        "w1" to (1024 * 256),
+        "b1" to 256,
+        "w2" to (256 * 20),
+        "b2" to 20
+    )
+
     fun serialize(weights: List<FloatArray>): String {
         var totalBytes = 0
-        weights.forEach { totalBytes += 4 + (it.size * 4) }
+        for ((_, size) in LAYER_SCHEMA) {
+            totalBytes += 4 + (size * 4)
+        }
 
         val combinedBuffer = ByteBuffer.allocate(totalBytes)
         combinedBuffer.order(ByteOrder.LITTLE_ENDIAN)
 
-        for (layer in weights) {
+        for ((idx, entry) in LAYER_SCHEMA.withIndex()) {
+            val layer = weights[idx]
             val layerSizeBytes = layer.size * 4
             combinedBuffer.putInt(layerSizeBytes)
             for (value in layer) {
@@ -27,7 +35,6 @@ object WeightSerializer {
 
         val combinedArray = combinedBuffer.array()
 
-        // Compress using zlib
         val deflater = Deflater()
         deflater.setInput(combinedArray)
         deflater.finish()
@@ -40,26 +47,26 @@ object WeightSerializer {
         return Base64.encodeToString(finalCompressed, Base64.NO_WRAP)
     }
 
-    /**
-     * Decodes base64 -> zlib decompress -> little-endian unpack to float32
-     */
-    fun deserialize(encoded: String, expectedSizes: List<Int>): List<FloatArray> {
+    fun deserialize(encoded: String): List<FloatArray> {
         val compressed = Base64.decode(encoded, Base64.NO_WRAP)
-        
+
         val inflater = Inflater()
         inflater.setInput(compressed)
-        
-        // Allocate a large buffer for decompressed data
-        val maxDecompressedSize = expectedSizes.sum() * 4 + (expectedSizes.size * 4)
-        val decompressed = ByteArray(maxDecompressedSize * 2) 
+
+        var maxDecompressed = 0
+        for ((_, size) in LAYER_SCHEMA) {
+            maxDecompressed += 4 + (size * 4)
+        }
+
+        val decompressed = ByteArray(maxDecompressed + 1024)
         val decompressedSize = inflater.inflate(decompressed)
         inflater.end()
-        
+
         val byteBuffer = ByteBuffer.wrap(decompressed, 0, decompressedSize)
         byteBuffer.order(ByteOrder.LITTLE_ENDIAN)
-        
+
         val result = mutableListOf<FloatArray>()
-        for (expectedSize in expectedSizes) {
+        for ((_, expectedSize) in LAYER_SCHEMA) {
             val sizeInBytes = byteBuffer.getInt()
             val numFloats = sizeInBytes / 4
             val floatArray = FloatArray(numFloats)
@@ -68,7 +75,7 @@ object WeightSerializer {
             }
             result.add(floatArray)
         }
-        
+
         return result
     }
 }

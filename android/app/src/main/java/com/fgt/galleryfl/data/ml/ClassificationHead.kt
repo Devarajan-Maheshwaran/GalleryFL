@@ -5,12 +5,14 @@ import kotlin.math.max
 
 class ClassificationHead(val numClasses: Int = 20) {
 
-    var w1: Array<FloatArray> = Array(960) { FloatArray(256) }
+    val inputDim = 1024
+
+    var w1: Array<FloatArray> = Array(inputDim) { FloatArray(256) }
     var b1: FloatArray = FloatArray(256)
     var w2: Array<FloatArray> = Array(256) { FloatArray(numClasses) }
     var b2: FloatArray = FloatArray(numClasses)
 
-    private var lastInput: FloatArray = FloatArray(960)
+    private var lastInput: FloatArray = FloatArray(inputDim)
     private var z1: FloatArray = FloatArray(256)
     private var a1: FloatArray = FloatArray(256)
     private var z2: FloatArray = FloatArray(numClasses)
@@ -21,7 +23,7 @@ class ClassificationHead(val numClasses: Int = 20) {
 
         for (j in 0 until 256) {
             var sum = b1[j]
-            for (i in 0 until 960) {
+            for (i in 0 until inputDim) {
                 sum += features[i] * w1[i][j]
             }
             z1[j] = sum
@@ -78,11 +80,11 @@ class ClassificationHead(val numClasses: Int = 20) {
             dz1[i] = if (z1[i] > 0f) da1[i] else 0f
         }
 
-        val dw1 = Array(960) { FloatArray(256) }
+        val dw1 = Array(inputDim) { FloatArray(256) }
         val db1 = FloatArray(256)
         for (j in 0 until 256) {
             db1[j] = dz1[j]
-            for (i in 0 until 960) {
+            for (i in 0 until inputDim) {
                 dw1[i][j] = lastInput[i] * dz1[j]
             }
         }
@@ -91,9 +93,9 @@ class ClassificationHead(val numClasses: Int = 20) {
     }
 
     fun getWeightsFlat(): List<FloatArray> {
-        val w1Flat = FloatArray(960 * 256)
+        val w1Flat = FloatArray(inputDim * 256)
         var idx = 0
-        for (i in 0 until 960) {
+        for (i in 0 until inputDim) {
             for (j in 0 until 256) {
                 w1Flat[idx++] = w1[i][j]
             }
@@ -114,7 +116,7 @@ class ClassificationHead(val numClasses: Int = 20) {
         if (weights.size != 4) return
 
         var idx = 0
-        for (i in 0 until 960) {
+        for (i in 0 until inputDim) {
             for (j in 0 until 256) {
                 w1[i][j] = weights[0][idx++]
             }

@@ -3,18 +3,24 @@ package com.fgt.galleryfl.data.network
 import okhttp3.ResponseBody
 import retrofit2.http.Body
 import retrofit2.http.GET
+import retrofit2.http.Header
 import retrofit2.http.POST
-import retrofit2.http.Path
 
 interface FGTApiService {
     @POST("api/register")
-    suspend fun register(@Body request: RegisterRequest): RegisterResponse
+    suspend fun register(
+        @Header("X-FGT-Token") token: String,
+        @Body request: RegisterRequest
+    ): RegisterResponse
 
     @GET("api/model/current")
     suspend fun getCurrentModel(): ResponseBody
 
     @POST("api/training/submit-update")
-    suspend fun submitUpdate(@Body update: ClientUpdateRequest): UpdateResponse
+    suspend fun submitUpdate(
+        @Header("X-FGT-Token") token: String,
+        @Body update: ClientUpdateRequest
+    ): UpdateResponse
 
     @GET("api/training/status")
     suspend fun getTrainingStatus(): TrainingStatusResponse

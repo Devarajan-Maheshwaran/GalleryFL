@@ -56,7 +56,7 @@ class LocalTrainer(
                 if (isCorrect) correct++
 
                 var idx = 0
-                for (r in 0 until 960) {
+                for (r in 0 until head.inputDim) {
                     for (c in 0 until 256) {
                         val w = head.w1[r][c]
                         val prox = mu * (w - globalW1[idx])
