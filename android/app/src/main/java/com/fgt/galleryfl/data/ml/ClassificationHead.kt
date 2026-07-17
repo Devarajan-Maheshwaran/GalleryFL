@@ -3,7 +3,7 @@ package com.fgt.galleryfl.data.ml
 import kotlin.math.exp
 import kotlin.math.max
 
-class ClassificationHead(val numClasses: Int = 20) {
+class ClassificationHead(val numClasses: Int = 34) {
 
     val inputDim = 1024
 
@@ -18,7 +18,7 @@ class ClassificationHead(val numClasses: Int = 20) {
     private var z2: FloatArray = FloatArray(numClasses)
     private var a2: FloatArray = FloatArray(numClasses)
 
-    fun forward(features: FloatArray): FloatArray {
+    fun forward(features: FloatArray, biasOffsets: FloatArray? = null): FloatArray {
         lastInput = features.copyOf()
 
         for (j in 0 until 256) {
@@ -36,6 +36,12 @@ class ClassificationHead(val numClasses: Int = 20) {
             for (i in 0 until 256) {
                 sum += a1[i] * w2[i][j]
             }
+            
+            // Apply optional local bias offset
+            if (biasOffsets != null && j < biasOffsets.size) {
+                sum += biasOffsets[j]
+            }
+            
             z2[j] = sum
             output[j] = 1f / (1f + exp(-sum))
             a2[j] = output[j]

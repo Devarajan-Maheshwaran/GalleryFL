@@ -1,0 +1,32 @@
+{
+  "num_classes": 34,
+  "layers": [
+    {
+      "name": "w1",
+      "shape": [
+        1024,
+        256
+      ]
+    },
+    {
+      "name": "b1",
+      "shape": [
+        256
+      ]
+    },
+    {
+      "name": "w2",
+      "shape": [
+        256,
+        34
+      ]
+    },
+    {
+      "name": "b2",
+      "shape": [
+        34
+      ]
+    }
+  ],
+  "taxonomy_version": 1
+}
