@@ -11,3 +11,4 @@ android/app/build/
 android/local.properties
 *.iml
 .pytest_cache/
+data/
