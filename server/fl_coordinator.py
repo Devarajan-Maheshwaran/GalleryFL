@@ -99,6 +99,8 @@ class FLCoordinator:
         )
 
         expected = len(self.get_online_registered())
+        logging.info(f"Registered client update from {client_id[:8]} (total round updates: {len(self.client_updates)}/{expected})")
+        
         if len(self.client_updates) >= max(self.config.min_clients, expected):
             asyncio.create_task(self._aggregate_and_advance())
 
@@ -107,7 +109,7 @@ class FLCoordinator:
             return
 
         num_updates = len(self.client_updates)
-        logging.info(f"Aggregating {num_updates} client updates for round {self.current_round}")
+        logging.info(f"=== [AGGREGATING] Aggregating {num_updates} client updates for round {self.current_round} ===")
 
         aggregated = self._trimmed_mean_aggregate()
         self.model_manager.update_global_weights(aggregated)

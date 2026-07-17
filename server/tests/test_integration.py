@@ -1,8 +1,8 @@
 import httpx
 import pytest
 
-SERVER_URL = "http://localhost:8080"
-TOKEN = "dev-token-change-me"
+SERVER_URL = "http://localhost:8000"
+TOKEN = "fgt-pass"
 HEADERS = {"X-FGT-Token": TOKEN}
 
 @pytest.mark.asyncio

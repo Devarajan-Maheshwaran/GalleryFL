@@ -1,5 +1,5 @@
 let ws;
-let accChart, lossChart;
+let accChart, lossChart, comparisonChart, f1Chart;
 let accData = [], lossData = [], roundLabels = [];
 let clients = {};
 let isTraining = false;
@@ -64,6 +64,61 @@ function initCharts() {
         },
         options: baseOptions
     });
+
+    comparisonChart = new Chart(document.getElementById('comparisonChart').getContext('2d'), {
+        type: 'bar',
+        data: {
+            labels: [],
+            datasets: [
+                {
+                    label: 'Baseline (Pre-trained)',
+                    data: [],
+                    backgroundColor: 'rgba(122, 99, 85, 0.4)',
+                    borderColor: 'rgba(122, 99, 85, 1)',
+                    borderWidth: 1
+                },
+                {
+                    label: 'Federated Model',
+                    data: [],
+                    backgroundColor: '#D4845A',
+                    borderColor: '#D4845A',
+                    borderWidth: 1
+                }
+            ]
+        },
+        options: {
+            ...baseOptions,
+            plugins: {
+                legend: { display: true, labels: { font: { family: 'Outfit', size: 11 } } }
+            },
+            scales: {
+                x: { grid: { color: COLORS.grid } },
+                y: { min: 0, max: 1, grid: { color: COLORS.grid } }
+            }
+        }
+    });
+
+    f1Chart = new Chart(document.getElementById('f1Chart').getContext('2d'), {
+        type: 'bar',
+        data: {
+            labels: [],
+            datasets: [{
+                label: 'F1 Score',
+                data: [],
+                backgroundColor: 'rgba(122, 158, 126, 0.7)',
+                borderColor: '#7A9E7E',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            ...baseOptions,
+            indexAxis: 'y',
+            scales: {
+                x: { min: 0, max: 1, grid: { color: COLORS.grid } },
+                y: { grid: { display: false } }
+            }
+        }
+    });
 }
 
 function connectWS() {
@@ -109,6 +164,12 @@ function routeEvent(type, data) {
         case 'update_received':
             highlightClient(data.client_id);
             break;
+        case 'clients_cleared':
+            clients = {};
+            renderClients();
+            refreshStatus();
+            refreshLeaderboard();
+            break;
     }
 }
 
@@ -138,6 +199,7 @@ function onRoundComplete(data) {
     lossChart.update();
     refreshLeaderboard();
     refreshStatus();
+    refreshComparison();
 }
 
 function onTrainingComplete(data) {
@@ -199,6 +261,17 @@ async function refreshStatus() {
         document.getElementById('client-count').innerText = data.connected_clients;
         document.getElementById('registered-count').innerText = data.registered_clients;
         document.getElementById('param-count').innerText = formatNumber(data.total_parameters);
+        document.getElementById('access-code').innerText = data.access_code || '-';
+
+        // Sync online clients list from endpoint status response
+        if (data.online_clients) {
+            const newClients = {};
+            data.online_clients.forEach(c => {
+                newClients[c.client_id] = c;
+            });
+            clients = newClients;
+            renderClients();
+        }
     } catch (e) {}
 }
 
@@ -224,9 +297,38 @@ async function refreshLeaderboard() {
     } catch (e) {}
 }
 
-async function startTraining() {
+async function refreshComparison() {
     try {
-        const res = await fetch('/api/training/start', { method: 'POST' });
+        const res = await fetch('/api/metrics/comparison');
+        const data = await res.json();
+        if (data.categories && data.categories.length > 0) {
+            comparisonChart.data.labels = data.categories;
+            comparisonChart.data.datasets[0].data = data.baseline;
+            comparisonChart.data.datasets[1].data = data.federated;
+            comparisonChart.update();
+
+            f1Chart.data.labels = data.categories;
+            f1Chart.data.datasets[0].data = data.federated;
+            f1Chart.update();
+        }
+    } catch (e) {}
+}
+
+async function startTraining() {
+    const minClients = parseInt(document.getElementById('inp-min-clients').value) || 2;
+    const maxRounds = parseInt(document.getElementById('inp-max-rounds').value) || 10;
+    const localEpochs = parseInt(document.getElementById('inp-local-epochs').value) || 3;
+
+    try {
+        const res = await fetch('/api/training/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                min_clients: minClients,
+                max_rounds: maxRounds,
+                local_epochs: localEpochs
+            })
+        });
         const data = await res.json();
         if (data.status !== 'started') {
             document.getElementById('phase-badge').innerText = data.status;
@@ -254,6 +356,7 @@ async function loadHistory() {
             lossChart.update();
             document.getElementById('btn-export-model').disabled = false;
             document.getElementById('btn-export-report').disabled = false;
+            refreshComparison();
         }
     } catch (e) {}
 }
@@ -296,17 +399,77 @@ function initNavigation() {
     document.querySelectorAll('.main-content > section').forEach(s => observer.observe(s));
 }
 
+let pendingExportUrl = "";
+
+function showExportModal(url, text) {
+    pendingExportUrl = url;
+    document.getElementById('modal-export-text').innerText = text;
+    const modal = document.getElementById('modal-export');
+    modal.style.display = 'flex';
+    setTimeout(() => modal.classList.add('active'), 10);
+}
+
+function hideExportModal() {
+    const modal = document.getElementById('modal-export');
+    modal.classList.remove('active');
+    setTimeout(() => modal.style.display = 'none', 200);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     initCharts();
     connectWS();
     refreshStatus();
     refreshLeaderboard();
     loadHistory();
+    refreshComparison();
 
     document.getElementById('btn-start').addEventListener('click', startTraining);
     document.getElementById('btn-stop').addEventListener('click', stopTraining);
-    document.getElementById('btn-export-model').addEventListener('click', () => window.open('/api/export/model', '_blank'));
-    document.getElementById('btn-export-report').addEventListener('click', () => window.open('/api/export/report', '_blank'));
+    
+    document.getElementById('btn-export-model').addEventListener('click', () => {
+        showExportModal('/api/export/model', 'Are you sure you want to export the latest aggregated global model weights in TFLite format? This file can be deployed to clients.');
+    });
+    document.getElementById('btn-export-report').addEventListener('click', () => {
+        showExportModal('/api/export/report', 'Are you sure you want to download the training session metrics report in JSON format? This contains cumulative participant leaderboard data.');
+    });
+
+    document.getElementById('modal-cancel-btn').addEventListener('click', hideExportModal);
+    document.getElementById('modal-confirm-btn').addEventListener('click', () => {
+        if (pendingExportUrl) {
+            window.open(pendingExportUrl, '_blank');
+        }
+        hideExportModal();
+    });
+
+    document.getElementById('btn-copy-code').addEventListener('click', () => {
+        const code = document.getElementById('access-code').innerText;
+        if (code && code !== '-') {
+            navigator.clipboard.writeText(code);
+            const btn = document.getElementById('btn-copy-code');
+            btn.innerText = 'Copied!';
+            setTimeout(() => btn.innerText = 'Copy', 2000);
+        }
+    });
+
+    document.getElementById('btn-regenerate-code').addEventListener('click', async () => {
+        try {
+            const res = await fetch('/api/training/regenerate-token', { method: 'POST' });
+            const data = await res.json();
+            if (data.access_code) {
+                document.getElementById('access-code').innerText = data.access_code;
+                const btn = document.getElementById('btn-regenerate-code');
+                btn.innerText = 'Regenerated!';
+                setTimeout(() => btn.innerText = 'Regenerate', 2000);
+                
+                // Clear UI clients lists & stats instantly
+                clients = {};
+                renderClients();
+                refreshStatus();
+                refreshLeaderboard();
+            }
+        } catch (e) {}
+    });
+
     document.getElementById('lan-ip').innerText = window.location.host;
 
     initNavigation();

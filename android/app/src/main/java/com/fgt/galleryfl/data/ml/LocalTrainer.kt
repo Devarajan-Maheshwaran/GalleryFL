@@ -90,12 +90,22 @@ class LocalTrainer(
         val accuracy = correct.toFloat() / numSamples
         val avgLoss = totalLoss / numSamples
 
-        var trainedWeights = head.getWeightsFlat()
-        trainedWeights = clipper.clip(trainedWeights)
-        trainedWeights = noiseInjector.addNoise(trainedWeights)
+        val trainedWeights = head.getWeightsFlat()
+        val delta = List(trainedWeights.size) { i ->
+            val tw = trainedWeights[i]
+            val gw = globalWeights[i]
+            FloatArray(tw.size) { j -> tw[j] - gw[j] }
+        }
+        val clippedDelta = clipper.clip(delta)
+        val noisyDelta = noiseInjector.addNoise(clippedDelta)
+        val finalWeights = List(globalWeights.size) { i ->
+            val gw = globalWeights[i]
+            val nd = noisyDelta[i]
+            FloatArray(gw.size) { j -> gw[j] + nd[j] }
+        }
 
         return TrainingResult(
-            updatedWeights = trainedWeights,
+            updatedWeights = finalWeights,
             numSamples = numSamples,
             localLoss = avgLoss,
             localAccuracy = accuracy

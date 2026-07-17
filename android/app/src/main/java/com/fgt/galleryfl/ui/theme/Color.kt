@@ -15,3 +15,7 @@ object FGTColors {
     val TextPrimary = Color(0xFF3D2B1F)
     val TextSecondary = Color(0xFF7A6355)
 }
+
+val PrimaryColor = FGTColors.AccentPrimary
+val AccentColor = FGTColors.AccentGold
+val NeutralColor = FGTColors.TextPrimary

@@ -1,6 +1,8 @@
 from pydantic import BaseModel
 import os
 
+import json
+
 class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8080
@@ -15,7 +17,7 @@ class ServerConfig(BaseModel):
     dp_delta: float = 1e-5
     max_grad_norm: float = 1.0
     convergence_threshold: float = 0.001
-    server_token: str = os.environ.get("FGT_SERVER_TOKEN", "dev-token-change-me")
+    server_token: str = os.environ.get("FGT_SERVER_TOKEN", "fgt-pass")
 
 
     model_path: str = "models/base_model.tflite"
@@ -24,4 +26,17 @@ class ServerConfig(BaseModel):
 
     @classmethod
     def load_or_default(cls) -> "ServerConfig":
+        if os.path.exists("config.json"):
+            try:
+                with open("config.json", "r") as f:
+                    return cls(**json.load(f))
+            except Exception:
+                pass
         return cls()
+
+    def save(self):
+        try:
+            with open("config.json", "w") as f:
+                json.dump(self.model_dump(), f, indent=2)
+        except Exception:
+            pass

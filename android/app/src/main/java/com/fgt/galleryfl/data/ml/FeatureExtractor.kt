@@ -2,8 +2,8 @@ package com.fgt.galleryfl.data.ml
 
 import android.content.Context
 import android.graphics.Bitmap
-import com.google.ai.edge.litert.Interpreter
-import com.google.ai.edge.litert.gpu.GpuDelegate
+import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.gpu.GpuDelegate
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.channels.FileChannel

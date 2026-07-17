@@ -1,4 +1,5 @@
 #!/bin/bash
+cd "$(dirname "$0")"
 echo "========================================="
 echo "FGT - Federated Gallery Tags Server"
 echo "========================================="

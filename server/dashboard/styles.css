@@ -278,3 +278,47 @@ h1, h2, h3 { font-family: 'Inter', sans-serif; }
   .sidebar { display: none; }
   .main-content { grid-template-columns: 1fr; }
 }
+
+.nm-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(61, 43, 31, 0.4);
+  backdrop-filter: blur(4px);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  transition: opacity 200ms ease;
+}
+.nm-modal {
+  max-width: 440px;
+  width: 90%;
+  padding: 24px;
+  background: var(--bg-base);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--nm-raised-strong);
+  transform: scale(0.95);
+  transition: transform 200ms ease;
+}
+.nm-modal-overlay.active .nm-modal {
+  transform: scale(1);
+}
+
+@media (min-width: 1024px) {
+  .main-content {
+    grid-template-columns: 1fr 1fr;
+  }
+  #panel-status { grid-column: 1; }
+  #panel-clients { grid-column: 2; }
+  #panel-training { grid-column: 1 / -1; }
+  #panel-accuracy { grid-column: 1; }
+  #panel-loss { grid-column: 2; }
+  #panel-f1 { grid-column: 1 / -1; }
+  #panel-comparison { grid-column: 1; }
+  #panel-leaderboard { grid-column: 2; }
+  #panel-privacy { grid-column: 1; }
+  #panel-export { grid-column: 2; }
+}
