@@ -53,6 +53,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 object FGTColors {
     val BgBase = Color(0xFFFFFFFF)
@@ -71,8 +72,25 @@ data class GalleryAlbum(
     val localPersonalizationAffected: Boolean
 )
 
+private data class ConnectionDetails(val serverUrl: String, val token: String)
+
+private fun parseConnectionDetails(input: String, fallbackUrl: String): ConnectionDetails {
+    val parts = input.trim().split("@", limit = 2)
+    val endpoint = parts.firstOrNull().orEmpty().trim()
+    val token = parts.getOrNull(1)?.trim().orEmpty()
+    val url = when {
+        endpoint.isBlank() -> fallbackUrl
+        endpoint.startsWith("http://") || endpoint.startsWith("https://") -> endpoint.removeSuffix("/")
+        else -> "http://${endpoint.removeSuffix("/")}"
+    }
+    require(token.isNotBlank()) { "Enter the server as IP:PORT@ACCESS_CODE" }
+    return ConnectionDetails(url, token)
+}
+
 class MainActivity : ComponentActivity() {
-    private val httpClient = OkHttpClient()
+    private val httpClient = OkHttpClient.Builder()
+        .pingInterval(20, TimeUnit.SECONDS)
+        .build()
     private val wsClient = FGTWebSocketClient(httpClient)
     private val defaultServerUrl = "http://10.0.2.2:8000"
     private val clientId = UUID.randomUUID().toString()
@@ -130,6 +148,7 @@ fun MainScreen(
     var isTraining by remember { mutableStateOf(false) }
     var currentRound by remember { mutableIntStateOf(0) }
     var currentModelVersion by remember { mutableIntStateOf(0) }
+    var registeredClientId by remember { mutableStateOf<String?>(null) }
 
     // Photos State
     var photos by remember { mutableStateOf<List<GalleryImage>>(emptyList()) }
@@ -162,7 +181,17 @@ fun MainScreen(
 
     // FL WebSocket Listeners
     DisposableEffect(Unit) {
-        wsClient.onUpdateRequested = { round, lr, epochs ->
+        wsClient.onConnectionChanged = { connected, reason ->
+            scope.launch {
+                isConnected = connected
+                if (connected) {
+                    statusText = "Connected to coordinator"
+                } else if (reason != null) {
+                    statusText = "Reconnecting: $reason"
+                }
+            }
+        }
+        wsClient.onUpdateRequested = { round, lr, epochs, mu ->
             currentRound = round
             isTraining = true
             statusText = "Syncing knowledge (Round $round)..."
@@ -218,15 +247,17 @@ fun MainScreen(
                         targetsList.add(labels)
                     }
 
-                    val trainer = LocalTrainer(ClassificationHead(numClasses))
+                    val trainer = LocalTrainer(ClassificationHead(numClasses), mu = mu)
                     val result = trainer.train(featuresList, targetsList, globalWeights, epochs = epochs, lr = lr)
 
                     apiService.submitUpdate(accessCode, ClientUpdateRequest(
-                        client_id = clientId,
+                        client_id = registeredClientId ?: error("Client is not registered"),
                         weights = WeightSerializer.serialize(result.updatedWeights),
                         num_samples = result.numSamples,
                         local_loss = result.localLoss,
-                        local_accuracy = result.localAccuracy
+                        local_accuracy = result.localAccuracy,
+                        round = round,
+                        base_model_version = currentModelVersion
                     ))
 
                     withContext(Dispatchers.Main) { statusText = "Sync complete for Round $round" }
@@ -293,11 +324,12 @@ fun MainScreen(
                                         return@launch
                                     }
 
-                                    val head = ClassificationHead(34)
+                                    val numClasses = activeWeights!![2].size / 256
+                                    val head = ClassificationHead(numClasses)
                                     head.setWeightsFlat(activeWeights!!)
                                     val feedbackStore = LocalFeedbackStore(context)
-                                    val thresholds = ThresholdResolver(feedbackStore).getThresholdsForAllClasses(34)
-                                    val biasOffsets = feedbackStore.getBiasOffsets(34)
+                                    val thresholds = ThresholdResolver(feedbackStore).getThresholdsForAllClasses(numClasses)
+                                    val biasOffsets = feedbackStore.getBiasOffsets(numClasses)
 
                                     val albumMap = mutableMapOf<Int, MutableList<Pair<GalleryImage, Float>>>()
                                     val confidenceMap = mutableMapOf<Int, Float>()
@@ -311,7 +343,7 @@ fun MainScreen(
                                         var bestClass = -1
                                         var bestMargin = -1f
 
-                                        for (c in 0 until 34) {
+                                        for (c in 0 until numClasses) {
                                             val margin = preds[c] - thresholds[c]
                                             if (margin >= 0 && margin > bestMargin) {
                                                 bestMargin = margin
@@ -363,11 +395,9 @@ fun MainScreen(
             onConnect = { code ->
                 scope.launch(Dispatchers.IO) {
                     try {
-                        // Force use 10.0.2.2:8000 for emulator reliability regardless of input
-                        val parsedToken = if (code.contains("@")) code.split("@")[1] else code
-                        // Strip out any dashboard IP and force emulator localhost
-                        currentServerUrl = "http://10.0.2.2:8000"
-                        accessCode = if (parsedToken.isBlank()) "fgt-pass" else parsedToken
+                        val connection = parseConnectionDetails(code, defaultServerUrl)
+                        currentServerUrl = connection.serverUrl
+                        accessCode = connection.token
 
                         val apiService = RetrofitClient.getApiService(currentServerUrl, httpClient)
                         val reg = apiService.register(accessCode, RegisterRequest(Build.MODEL, "User-${clientId.take(4)}"))
@@ -378,9 +408,9 @@ fun MainScreen(
                         currentModelVersion = serverVersion
                         
                         withContext(Dispatchers.Main) {
-                            wsClient.connect(currentServerUrl, reg.client_id)
-                            isConnected = true
-                            statusText = "Synced with coordinator"
+                            wsClient.connect(currentServerUrl, reg.client_id, accessCode)
+                            registeredClientId = reg.client_id
+                            statusText = "Opening secure connection..."
                         }
                     } catch (e: Exception) {
                         withContext(Dispatchers.Main) { statusText = "Sync failed: ${e.message}" }

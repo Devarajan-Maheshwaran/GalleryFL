@@ -127,19 +127,41 @@ class ModelManager:
         return base64.b64encode(compressed).decode('ascii')
 
     def deserialize_weights(self, encoded: str) -> List[np.ndarray]:
-        compressed = base64.b64decode(encoded)
-        combined = zlib.decompress(compressed)
+        """Decode the strict, canonical FGT v1 head-weight wire format."""
+        try:
+            compressed = base64.b64decode(encoded, validate=True)
+            combined = zlib.decompress(compressed)
+        except Exception as exc:
+            raise ValueError("Payload is not valid base64/zlib data") from exc
 
         offset = 0
         weights = []
         for name, shape in LAYER_SCHEMA:
+            if offset + 4 > len(combined):
+                raise ValueError(f"Missing length prefix for {name}")
             size = struct.unpack_from('<I', combined, offset)[0]
             offset += 4
-            layer = np.frombuffer(combined[offset:offset + size], dtype=np.float32).copy().reshape(shape)
+            expected_size = int(np.prod(shape)) * np.dtype('<f4').itemsize
+            if size != expected_size:
+                raise ValueError(f"Invalid byte length for {name}: expected {expected_size}, got {size}")
+            if offset + size > len(combined):
+                raise ValueError(f"Truncated tensor payload for {name}")
+            layer = np.frombuffer(combined[offset:offset + size], dtype='<f4').copy().reshape(shape)
             offset += size
             weights.append(layer)
 
+        if offset != len(combined):
+            raise ValueError("Unexpected trailing bytes in weight payload")
         return weights
+
+    def get_schema(self) -> dict:
+        return {
+            "schema_version": 1,
+            "serialization": "zlib(base64(little_endian_uint32_length + little_endian_float32_tensor))*",
+            "num_classes": NUM_CLASSES,
+            "layers": [{"name": name, "shape": list(shape), "dtype": "float32"}
+                       for name, shape in LAYER_SCHEMA],
+        }
 
     def update_global_weights(self, new_weights: List[np.ndarray]):
         for w, (name, shape) in zip(new_weights, LAYER_SCHEMA):

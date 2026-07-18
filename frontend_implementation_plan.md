@@ -2,7 +2,7 @@
 
 ## Overview
 
-The FGT Server Dashboard is a single-page Neumorphic (Soft UI) web interface served as static files by the FastAPI server. It provides real-time monitoring and control of the federated learning session. Built with **vanilla HTML + CSS + JS** (no frameworks), using **Chart.js** for data visualization and native **WebSocket API** for live updates.
+The FGT Server Dashboard is a single-page Neumorphic (Mid-Soft UI) web interface served as static files by the FastAPI server. It provides real-time monitoring and control of the federated learning session. Built with **vanilla HTML + CSS + JS** (no frameworks), using **Chart.js** for data visualization and native **WebSocket API** for live updates.
 
 **Files produced:**
 ```

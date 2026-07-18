@@ -11,6 +11,7 @@ import uuid
 import numpy as np
 import socket
 import base64
+import json
 from typing import Optional
 
 from config import ServerConfig
@@ -68,7 +69,7 @@ def get_lan_ip() -> str:
 @app.on_event("startup")
 async def startup_event():
     lan_ip = get_lan_ip()
-    port = 8000
+    port = config.port
     encoded_code = encrypt_access_code(f"http://{lan_ip}:{port}", config.server_token)
     
     # Start UDP Broadcast Discovery Listener in a daemon thread
@@ -110,6 +111,8 @@ class ClientUpdateRequest(BaseModel):
     num_samples: int
     local_loss: float
     local_accuracy: float
+    round: int
+    base_model_version: int
 
 async def verify_token(x_fgt_token: Optional[str] = Header(None)):
     if x_fgt_token != config.server_token:
@@ -137,8 +140,17 @@ async def get_current_model(client_version: int = 0):
         headers={"X-Model-Format": "full", "X-Model-Version": str(model_manager.current_version)}
     )
 
+@app.get("/api/model/schema")
+async def get_model_schema():
+    """Canonical, versioned tensor and serialization contract for FL clients."""
+    return model_manager.get_schema() | {"model_version": model_manager.current_version}
+
 @app.post("/api/training/submit-update", dependencies=[Depends(verify_token)])
 async def submit_update(req: ClientUpdateRequest):
+    if req.client_id not in coordinator.registered_clients:
+        raise HTTPException(status_code=403, detail="Client must register before submitting updates")
+    if req.num_samples <= 0:
+        raise HTTPException(status_code=400, detail="num_samples must be positive")
     if not rate_limiter.check(req.client_id):
         raise HTTPException(status_code=429, detail="Rate limit exceeded: max 1 update per 5 seconds")
 
@@ -161,10 +173,13 @@ async def submit_update(req: ClientUpdateRequest):
 
     logging.info(f"Update ACCEPTED from client {req.client_id[:8]} (samples={req.num_samples}, loss={req.local_loss:.4f}, accuracy={req.local_accuracy:.4f})")
 
-    coordinator.submit_client_update(
+    accepted = coordinator.submit_client_update(
         req.client_id, weights,
-        {"num_samples": req.num_samples, "local_loss": req.local_loss, "local_accuracy": req.local_accuracy}
+        {"num_samples": req.num_samples, "local_loss": req.local_loss, "local_accuracy": req.local_accuracy,
+         "round": req.round, "base_model_version": req.base_model_version}
     )
+    if not accepted:
+        raise HTTPException(status_code=409, detail="Update is stale, duplicate, or no training round is active")
     await ws_manager.broadcast({"type": "update_received", "data": {"client_id": req.client_id, "round": coordinator.current_round}})
     return {"status": "accepted"}
 
@@ -310,10 +325,25 @@ async def export_report():
 @app.websocket("/ws/feed")
 async def websocket_endpoint(websocket: WebSocket):
     client_id = websocket.query_params.get("client_id", f"anon_{id(websocket)}")
+    token = websocket.headers.get("x-fgt-token")
+    is_dashboard = client_id == "dashboard"
+    if not is_dashboard and (token != config.server_token or client_id not in coordinator.registered_clients):
+        await websocket.close(code=1008, reason="Register with a valid access code before opening WebSocket")
+        return
+
     await ws_manager.connect(client_id, websocket)
+    if not is_dashboard:
+        await coordinator.on_client_reconnected(client_id)
     try:
         while True:
-            await websocket.receive_text()
+            raw_message = await websocket.receive_text()
+            if not is_dashboard:
+                try:
+                    message = json.loads(raw_message)
+                    if message.get("type") == "heartbeat":
+                        coordinator.record_heartbeat(client_id)
+                except (TypeError, ValueError):
+                    logging.debug("Ignoring malformed WebSocket message from %s", client_id[:8])
     except WebSocketDisconnect:
         ws_manager.disconnect(client_id)
         await ws_manager.broadcast({"type": "client_disconnected", "data": {"client_id": client_id}})

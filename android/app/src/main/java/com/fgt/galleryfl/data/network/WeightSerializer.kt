@@ -45,19 +45,22 @@ object WeightSerializer {
         val inflater = Inflater()
         inflater.setInput(compressed)
 
-        val maxDecompressed = 1024 * 1024 * 5 // 5MB buffer is safe for our models
+        val maxDecompressed = 1024 * 1024 * 5 // Deliberate upper bound for the head-only contract.
         val decompressed = ByteArray(maxDecompressed)
         val decompressedSize = inflater.inflate(decompressed)
         inflater.end()
+        require(decompressedSize > 0) { "Weight payload did not decompress" }
 
         val byteBuffer = ByteBuffer.wrap(decompressed, 0, decompressedSize)
         byteBuffer.order(ByteOrder.LITTLE_ENDIAN)
 
         val result = mutableListOf<FloatArray>()
-        // Model always has 4 layers (w1, b1, w2, b2)
+        // FGT v1 has exactly four schema-ordered head tensors: w1, b1, w2, b2.
         for (i in 0 until 4) {
-            if (byteBuffer.remaining() < 4) break
+            require(byteBuffer.remaining() >= 4) { "Missing length prefix for tensor $i" }
             val sizeInBytes = byteBuffer.getInt()
+            require(sizeInBytes >= 0 && sizeInBytes % 4 == 0) { "Invalid tensor length for tensor $i" }
+            require(byteBuffer.remaining() >= sizeInBytes) { "Truncated tensor payload for tensor $i" }
             val numFloats = sizeInBytes / 4
             val floatArray = FloatArray(numFloats)
             for (j in 0 until numFloats) {
@@ -65,7 +68,7 @@ object WeightSerializer {
             }
             result.add(floatArray)
         }
-
+        require(byteBuffer.remaining() == 0) { "Unexpected trailing bytes in weight payload" }
         return result
     }
 }

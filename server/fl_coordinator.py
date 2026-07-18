@@ -1,7 +1,7 @@
 import asyncio
 import time
 import numpy as np
-from typing import Dict, List
+from typing import Dict, List, Set
 from config import ServerConfig
 from metrics import MetricsStore, RoundMetrics
 from model_manager import ModelManager
@@ -23,15 +23,29 @@ class FLCoordinator:
         self.registered_clients: Dict[str, dict] = {}
         self.client_updates: Dict[str, List[np.ndarray]] = {}
         self.client_metadata: Dict[str, dict] = {}
+        self.round_participants: Set[str] = set()
         self.round_timeout_seconds: int = 120
+        self._aggregation_lock = asyncio.Lock()
 
     def register_client(self, client_id: str, metadata: dict) -> bool:
+        metadata["last_heartbeat"] = time.time()
         self.registered_clients[client_id] = metadata
         logging.info(f"Client registered: {client_id} ({metadata.get('nickname', 'unknown')})")
         return True
 
     def get_online_registered(self) -> List[str]:
         return [cid for cid in self.registered_clients if cid in ws_manager.online_clients]
+
+    def record_heartbeat(self, client_id: str) -> None:
+        if client_id in self.registered_clients:
+            self.registered_clients[client_id]["last_heartbeat"] = time.time()
+
+    async def on_client_reconnected(self, client_id: str) -> None:
+        """Resume an interrupted participant without admitting new mid-round clients."""
+        self.record_heartbeat(client_id)
+        if self.is_training and client_id in self.round_participants and client_id not in self.client_updates:
+            logging.info("Reissuing round %s request to reconnected client %s", self.current_round, client_id[:8])
+            await self._request_update(client_id)
 
     async def start_training(self):
         if self.is_training:
@@ -70,13 +84,22 @@ class FLCoordinator:
             await ws_manager.broadcast({"type": "training_complete", "data": {"reason": "insufficient_clients", "final_round": self.current_round - 1}})
             return
 
+        self.round_participants = set(selected)
+
         for cid in selected:
-            await ws_manager.send_personal_message({
-                "type": "update_requested",
-                "data": {"round": self.current_round, "config": {"local_epochs": self.config.local_epochs, "lr": self.config.learning_rate, "mu": self.config.mu}}
-            }, cid)
+            await self._request_update(cid)
 
         asyncio.create_task(self._round_timeout())
+
+    async def _request_update(self, client_id: str) -> None:
+        await ws_manager.send_personal_message({
+            "type": "update_requested",
+            "data": {"round": self.current_round, "config": {
+                "local_epochs": self.config.local_epochs,
+                "lr": self.config.learning_rate,
+                "mu": self.config.mu,
+            }},
+        }, client_id)
 
     async def _round_timeout(self):
         round_at_start = self.current_round
@@ -85,9 +108,18 @@ class FLCoordinator:
             logging.warning(f"Round {round_at_start} timed out with {len(self.client_updates)} updates, proceeding to aggregate")
             await self._aggregate_and_advance()
 
-    def submit_client_update(self, client_id: str, weights: List[np.ndarray], metadata: dict):
+    def submit_client_update(self, client_id: str, weights: List[np.ndarray], metadata: dict) -> bool:
         if not self.is_training:
-            return
+            return False
+        if metadata.get("round") != self.current_round:
+            logging.warning("Rejected stale update from %s for round %s (current %s)", client_id[:8], metadata.get("round"), self.current_round)
+            return False
+        if metadata.get("base_model_version") != self.model_manager.current_version:
+            logging.warning("Rejected update from %s based on model v%s (current v%s)", client_id[:8], metadata.get("base_model_version"), self.model_manager.current_version)
+            return False
+        if client_id in self.client_updates:
+            logging.warning("Rejected duplicate update from %s for round %s", client_id[:8], self.current_round)
+            return False
 
         self.client_updates[client_id] = weights
         self.client_metadata[client_id] = metadata
@@ -100,76 +132,54 @@ class FLCoordinator:
             epsilon_used=self.config.dp_epsilon
         )
 
-        expected = len(self.get_online_registered())
+        expected = len(self.round_participants)
         logging.info(f"Registered client update from {client_id[:8]} (total round updates: {len(self.client_updates)}/{expected})")
         
         if len(self.client_updates) >= max(self.config.min_clients, expected):
             asyncio.create_task(self._aggregate_and_advance())
+        return True
 
     async def _aggregate_and_advance(self):
-        if len(self.client_updates) == 0:
-            return
+        async with self._aggregation_lock:
+            if not self.is_training or len(self.client_updates) == 0:
+                return
 
-        num_updates = len(self.client_updates)
-        logging.info(f"=== [AGGREGATING] Aggregating {num_updates} client updates for round {self.current_round} ===")
+            num_updates = len(self.client_updates)
+            logging.info(f"=== [AGGREGATING] Aggregating {num_updates} client updates for round {self.current_round} ===")
+            aggregated = self._trimmed_mean_aggregate()
 
-        aggregated = self._trimmed_mean_aggregate()
-        
-        # Apply FedProx Proximal Term on Server Side
-        mu = self.config.mu
-        for i in range(len(aggregated)):
-            aggregated[i] = (1 - mu) * aggregated[i] + mu * self.model_manager.global_weights[i]
+            # FedProx is enforced by the client local objective. Applying it a
+            # second time here is not FedProx and double-regularises updates.
+            self.model_manager.update_global_weights(aggregated)
+            asyncio.create_task(self._run_evaluation())
 
-        self.model_manager.update_global_weights(aggregated)
-        
-        # Trigger async evaluation
-        asyncio.create_task(self._run_evaluation())
+            avg_loss = float(np.mean([m.get("local_loss", 0.0) for m in self.client_metadata.values()]))
+            avg_acc = float(np.mean([m.get("local_accuracy", 0.0) for m in self.client_metadata.values()]))
+            total_samples = sum(m.get("num_samples", 0) for m in self.client_metadata.values())
+            metrics = RoundMetrics(
+                round=self.current_round, timestamp=time.time(), num_clients=num_updates,
+                global_loss=avg_loss, global_accuracy=avg_acc, total_samples=total_samples,
+                client_contributions={cid: m.get("num_samples", 0) for cid, m in self.client_metadata.items()},
+            )
+            converged = bool(self.metrics_store.history and abs(avg_loss - self.metrics_store.history[-1].global_loss) < self.config.convergence_threshold)
+            self.metrics_store.log_round(metrics)
+            await ws_manager.broadcast({"type": "round_completed", "data": metrics.model_dump()})
 
-        avg_loss = float(np.mean([m.get("local_loss", 0.0) for m in self.client_metadata.values()]))
-        avg_acc = float(np.mean([m.get("local_accuracy", 0.0) for m in self.client_metadata.values()]))
-        total_samples = sum(m.get("num_samples", 0) for m in self.client_metadata.values())
-
-        metrics = RoundMetrics(
-            round=self.current_round,
-            timestamp=time.time(),
-            num_clients=num_updates,
-            global_loss=avg_loss,
-            global_accuracy=avg_acc,
-            total_samples=total_samples,
-            client_contributions={cid: m.get("num_samples", 0) for cid, m in self.client_metadata.items()}
-        )
-        converged = False
-        if len(self.metrics_store.history) > 0:
-            prev_loss = self.metrics_store.history[-1].global_loss
-            if abs(avg_loss - prev_loss) < self.config.convergence_threshold:
-                converged = True
-
-        self.metrics_store.log_round(metrics)
-
-        await ws_manager.broadcast({"type": "round_completed", "data": metrics.model_dump()})
-
-        if self.current_round >= self.config.max_rounds or converged:
-            elapsed = time.time() - self.session_start_time
-            reason = "converged" if converged else "max_rounds_reached"
-            logging.info(f"Training complete after {self.current_round} rounds ({elapsed:.0f}s) - {reason}")
-            self.is_training = False
-            await ws_manager.broadcast({
-                "type": "training_complete",
-                "data": {
-                    "final_round": self.current_round,
-                    "final_accuracy": avg_acc,
-                    "final_loss": avg_loss,
-                    "duration_seconds": round(elapsed, 1),
-                    "reason": reason
-                }
-            })
-        else:
-            self.current_round += 1
-            await ws_manager.broadcast({
-                "type": "round_started",
-                "data": {"round": self.current_round, "total_rounds": self.config.max_rounds}
-            })
-            await self._run_round()
+            if self.current_round >= self.config.max_rounds or converged:
+                elapsed = time.time() - self.session_start_time
+                reason = "converged" if converged else "max_rounds_reached"
+                logging.info(f"Training complete after {self.current_round} rounds ({elapsed:.0f}s) - {reason}")
+                self.is_training = False
+                await ws_manager.broadcast({"type": "training_complete", "data": {
+                    "final_round": self.current_round, "final_accuracy": avg_acc, "final_loss": avg_loss,
+                    "duration_seconds": round(elapsed, 1), "reason": reason,
+                }})
+            else:
+                self.current_round += 1
+                await ws_manager.broadcast({"type": "round_started", "data": {
+                    "round": self.current_round, "total_rounds": self.config.max_rounds,
+                }})
+                await self._run_round()
 
     def _trimmed_mean_aggregate(self) -> List[np.ndarray]:
         aggregated = []

@@ -12,10 +12,9 @@ data class TrainingResult(
 class LocalTrainer(
     private val head: ClassificationHead,
     private val clipper: GradientClipper = GradientClipper(maxNorm = 1.0f),
-    private val noiseInjector: DPNoiseInjector = DPNoiseInjector()
+    private val noiseInjector: DPNoiseInjector = DPNoiseInjector(),
+    private val mu: Float = 0.01f,
 ) {
-    private val mu = 0.01f
-
     fun train(
         featuresList: List<FloatArray>,
         targetsList: List<FloatArray>,

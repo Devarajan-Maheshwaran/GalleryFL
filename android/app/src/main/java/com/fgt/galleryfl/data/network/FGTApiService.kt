@@ -44,7 +44,9 @@ data class ClientUpdateRequest(
     val weights: String,
     val num_samples: Int,
     val local_loss: Float,
-    val local_accuracy: Float
+    val local_accuracy: Float,
+    val round: Int,
+    val base_model_version: Int
 )
 
 data class UpdateResponse(
