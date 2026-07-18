@@ -6,7 +6,6 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -15,11 +14,6 @@ import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -31,46 +25,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.fgt.galleryfl.data.local.*
 import com.fgt.galleryfl.data.ml.*
 import com.fgt.galleryfl.data.network.*
 import com.fgt.galleryfl.data.taxonomy.TaxonomyConfig
-import coil3.compose.AsyncImage
+import com.fgt.galleryfl.ui.screens.*
+import com.fgt.galleryfl.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.InetAddress
 import java.util.UUID
 import java.util.concurrent.TimeUnit
-
-object FGTColors {
-    val BgBase = Color(0xFFFFFFFF)
-    val BgSurface = Color(0xFFF1F3F4)
-    val AccentPrimary = Color(0xFF1A73E8) // Google Blue
-    val TextPrimary = Color(0xFF202124)
-    val TextSecondary = Color(0xFF5F6368)
-}
-
-data class GalleryAlbum(
-    val folderPath: String,
-    val tagName: String,
-    val images: List<GalleryImage>,
-    val averageConfidence: Float,
-    val thresholdUsed: Float,
-    val localPersonalizationAffected: Boolean
-)
 
 private data class ConnectionDetails(val serverUrl: String, val token: String)
 
@@ -93,14 +62,20 @@ class MainActivity : ComponentActivity() {
         .build()
     private val wsClient = FGTWebSocketClient(httpClient)
     private val defaultServerUrl = "http://10.0.2.2:8000"
-    private val clientId = UUID.randomUUID().toString()
+    private lateinit var clientId: String
     private lateinit var featureExtractor: FeatureExtractor
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        val prefs = getSharedPreferences("fgt_prefs", Context.MODE_PRIVATE)
+        clientId = prefs.getString("client_id", null) ?: UUID.randomUUID().toString().also {
+            prefs.edit().putString("client_id", it).apply()
+        }
+        
         featureExtractor = FeatureExtractor(this)
         setContent {
-            FGTTheme {
+            GalleryFLTheme {
                 MainScreen(wsClient, httpClient, defaultServerUrl, clientId, featureExtractor)
             }
         }
@@ -111,18 +86,6 @@ class MainActivity : ComponentActivity() {
         wsClient.disconnect()
         featureExtractor.close()
     }
-}
-
-@Composable
-fun FGTTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = lightColorScheme(
-            primary = FGTColors.AccentPrimary,
-            surface = FGTColors.BgBase,
-            onSurface = FGTColors.TextPrimary
-        ),
-        content = content
-    )
 }
 
 @Composable
@@ -138,6 +101,8 @@ fun MainScreen(
 
     var selectedTab by remember { mutableIntStateOf(0) }
     var showFLDialog by remember { mutableStateOf(false) }
+    var selectedImage by remember { mutableStateOf<GalleryImage?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
 
     // FL State
     var currentServerUrl by remember { mutableStateOf(defaultServerUrl) }
@@ -152,6 +117,23 @@ fun MainScreen(
 
     // Photos State
     var photos by remember { mutableStateOf<List<GalleryImage>>(emptyList()) }
+    var smartAlbums by remember { mutableStateOf<List<GalleryAlbum>>(emptyList()) }
+    var isScanning by remember { mutableStateOf(false) }
+
+    val filteredPhotos by remember {
+        derivedStateOf {
+            if (searchQuery.isBlank()) {
+                photos
+            } else {
+                val matchingAlbumTags = smartAlbums
+                    .filter { it.tagName.contains(searchQuery, ignoreCase = true) }
+                    .flatMap { it.images.map { img -> img.id } }
+                    .toSet()
+                photos.filter { it.id in matchingAlbumTags || it.displayName.contains(searchQuery, ignoreCase = true) }
+            }
+        }
+    }
+
     var hasPermission by remember {
         mutableStateOf(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -162,14 +144,21 @@ fun MainScreen(
         )
     }
 
-    // Explore State
-    var smartAlbums by remember { mutableStateOf<List<GalleryAlbum>>(emptyList()) }
-    var isScanning by remember { mutableStateOf(false) }
-
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         hasPermission = permissions.values.all { it }
+    }
+
+    val deleteLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            // Successfully deleted, refresh list
+            scope.launch {
+                photos = GalleryRepository(context).fetchRecentImages(limit = 500)
+            }
+        }
     }
 
     // Initial Load
@@ -280,110 +269,148 @@ fun MainScreen(
         onDispose { wsClient.disconnect() }
     }
 
-    Scaffold(
-        topBar = {
-            PhotosTopBar(
-                isTraining = isTraining,
-                onProfileClick = { showFLDialog = true }
-            )
-        },
-        bottomBar = {
-            PhotosBottomNav(
-                selectedTab = selectedTab,
-                onTabSelected = { selectedTab = it }
-            )
-        }
-    ) { padding ->
-        Box(modifier = Modifier.padding(padding)) {
-            if (!hasPermission) {
-                PermissionScreen {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        permissionLauncher.launch(arrayOf(Manifest.permission.READ_MEDIA_IMAGES))
-                    } else {
-                        permissionLauncher.launch(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE))
-                    }
+    Box(modifier = Modifier.fillMaxSize().background(FGTColors.BgBase)) {
+        Scaffold(
+            containerColor = Color.Transparent,
+            topBar = {
+                if (selectedImage == null) {
+                    PhotosTopBar(
+                        searchQuery = searchQuery,
+                        onSearchQueryChange = { searchQuery = it },
+                        isTraining = isTraining,
+                        onProfileClick = { showFLDialog = true }
+                    )
                 }
-            } else {
-                when (selectedTab) {
-                    0 -> PhotosScreen(photos)
-                    1 -> ExploreScreen(
-                        smartAlbums = smartAlbums,
-                        isScanning = isScanning,
-                        onScanClick = {
-                            isScanning = true
-                            scope.launch(Dispatchers.IO) {
-                                try {
-                                    val repo = GalleryRepository(context)
-                                    val allImages = repo.fetchRecentImages(limit = 200)
-                                    if (activeWeights == null) {
-                                        withContext(Dispatchers.Main) {
-                                            isScanning = false
-                                            statusText = "Connect to sync model first"
-                                            showFLDialog = true
+            },
+            bottomBar = {
+                if (selectedImage == null) {
+                    PhotosBottomNav(
+                        selectedTab = selectedTab,
+                        onTabSelected = { selectedTab = it }
+                    )
+                }
+            }
+        ) { padding ->
+            Box(modifier = Modifier.padding(padding)) {
+                if (!hasPermission) {
+                    PermissionScreen {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            permissionLauncher.launch(arrayOf(Manifest.permission.READ_MEDIA_IMAGES))
+                        } else {
+                            permissionLauncher.launch(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE))
+                        }
+                    }
+                } else {
+                    when (selectedTab) {
+                        0 -> PhotosScreen(
+                            photos = filteredPhotos,
+                            onImageClick = { selectedImage = it }
+                        )
+                        1 -> ExploreScreen(
+                            smartAlbums = smartAlbums,
+                            isScanning = isScanning,
+                            onScanClick = {
+                                isScanning = true
+                                scope.launch(Dispatchers.IO) {
+                                    try {
+                                        val repo = GalleryRepository(context)
+                                        val allImages = repo.fetchRecentImages(limit = 500)
+                                        if (activeWeights == null) {
+                                            withContext(Dispatchers.Main) {
+                                                isScanning = false
+                                                statusText = "Connect to sync model first"
+                                                showFLDialog = true
+                                            }
+                                            return@launch
                                         }
-                                        return@launch
-                                    }
 
-                                    val numClasses = activeWeights!![2].size / 256
-                                    val head = ClassificationHead(numClasses)
-                                    head.setWeightsFlat(activeWeights!!)
-                                    val feedbackStore = LocalFeedbackStore(context)
-                                    val thresholds = ThresholdResolver(feedbackStore).getThresholdsForAllClasses(numClasses)
-                                    val biasOffsets = feedbackStore.getBiasOffsets(numClasses)
+                                        val numClasses = activeWeights!![2].size / 256
+                                        val head = ClassificationHead(numClasses)
+                                        head.setWeightsFlat(activeWeights!!)
+                                        val feedbackStore = LocalFeedbackStore(context)
+                                        val thresholds = ThresholdResolver(feedbackStore).getThresholdsForAllClasses(numClasses)
+                                        val biasOffsets = feedbackStore.getBiasOffsets(numClasses)
 
-                                    val albumMap = mutableMapOf<Int, MutableList<Pair<GalleryImage, Float>>>()
-                                    val confidenceMap = mutableMapOf<Int, Float>()
+                                        val albumMap = mutableMapOf<Int, MutableList<Pair<GalleryImage, Float>>>()
+                                        val confidenceMap = mutableMapOf<Int, Float>()
 
-                                    for (img in allImages) {
-                                        val bitmap = repo.loadBitmap(img.uri) ?: continue
-                                        val features = featureExtractor.extractFeatures(bitmap).projection
-                                        val preds = head.forward(features, biasOffsets)
+                                        for (img in allImages) {
+                                            val bitmap = repo.loadBitmap(img.uri) ?: continue
+                                            val features = featureExtractor.extractFeatures(bitmap).projection
+                                            val preds = head.forward(features, biasOffsets)
 
-                                        // WINNER TAKES ALL - find best class above threshold
-                                        var bestClass = -1
-                                        var bestMargin = -1f
+                                            var bestClass = -1
+                                            var bestMargin = -1f
 
-                                        for (c in 0 until numClasses) {
-                                            val margin = preds[c] - thresholds[c]
-                                            if (margin >= 0 && margin > bestMargin) {
-                                                bestMargin = margin
-                                                bestClass = c
+                                            for (c in 0 until numClasses) {
+                                                val margin = preds[c] - thresholds[c]
+                                                if (margin >= 0 && margin > bestMargin) {
+                                                    bestMargin = margin
+                                                    bestClass = c
+                                                }
+                                            }
+
+                                            if (bestClass != -1) {
+                                                albumMap.getOrPut(bestClass) { mutableListOf() }.add(Pair(img, preds[bestClass]))
+                                                confidenceMap[bestClass] = (confidenceMap[bestClass] ?: 0f) + preds[bestClass]
                                             }
                                         }
 
-                                        if (bestClass != -1) {
-                                            albumMap.getOrPut(bestClass) { mutableListOf() }.add(Pair(img, preds[bestClass]))
-                                            confidenceMap[bestClass] = (confidenceMap[bestClass] ?: 0f) + preds[bestClass]
+                                        val finalAlbums = albumMap.map { (c, imagePairs) ->
+                                            val policy = TaxonomyConfig.getPolicyForClassIndex(c)!!
+                                            val sortedImages = imagePairs.sortedByDescending { it.second }.map { it.first }
+                                            GalleryAlbum(
+                                                folderPath = "${policy.category.name}/${policy.tag.name}",
+                                                tagName = policy.tag.name,
+                                                images = sortedImages,
+                                                averageConfidence = confidenceMap[c]!! / sortedImages.size,
+                                                thresholdUsed = thresholds[c],
+                                                localPersonalizationAffected = false
+                                            )
                                         }
-                                    }
 
-                                    val finalAlbums = albumMap.map { (c, imagePairs) ->
-                                        val policy = TaxonomyConfig.getPolicyForClassIndex(c)!!
-                                        val sortedImages = imagePairs.sortedByDescending { it.second }.map { it.first }
-                                        GalleryAlbum(
-                                            folderPath = "${policy.category.name}/${policy.tag.name}",
-                                            tagName = policy.tag.name,
-                                            images = sortedImages,
-                                            averageConfidence = confidenceMap[c]!! / sortedImages.size,
-                                            thresholdUsed = thresholds[c],
-                                            localPersonalizationAffected = false
-                                        )
+                                        withContext(Dispatchers.Main) {
+                                            smartAlbums = finalAlbums
+                                            isScanning = false
+                                        }
+                                    } catch (e: Exception) {
+                                        withContext(Dispatchers.Main) { isScanning = false }
                                     }
-
-                                    withContext(Dispatchers.Main) {
-                                        smartAlbums = finalAlbums
-                                        isScanning = false
-                                    }
-                                } catch (e: Exception) {
-                                    withContext(Dispatchers.Main) { isScanning = false }
                                 }
+                            },
+                            onAlbumClick = { album ->
+                                searchQuery = album.tagName
+                                selectedTab = 0
                             }
-                        }
-                    )
-                    2 -> LibraryScreen(smartAlbums)
+                        )
+                        2 -> LibraryScreen(smartAlbums)
+                    }
                 }
             }
         }
+
+        selectedImage?.let { image ->
+        ImageDetailScreen(
+            image = image,
+            onBack = { selectedImage = null },
+            onDelete = { img ->
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    val pendingIntent = android.provider.MediaStore.createDeleteRequest(
+                        context.contentResolver,
+                        listOf(img.uri)
+                    )
+                    deleteLauncher.launch(
+                        androidx.activity.result.IntentSenderRequest.Builder(pendingIntent.intentSender).build()
+                    )
+                } else {
+                    // Legacy delete
+                    context.contentResolver.delete(img.uri, null, null)
+                    photos = photos.filter { it.id != img.id }
+                }
+                selectedImage = null
+            }
+        )
+    }
     }
 
     if (showFLDialog) {
@@ -416,6 +443,12 @@ fun MainScreen(
                         withContext(Dispatchers.Main) { statusText = "Sync failed: ${e.message}" }
                     }
                 }
+            },
+            onDisconnect = {
+                wsClient.disconnect()
+                isConnected = false
+                isTraining = false
+                statusText = "Ready to sync"
             }
         )
     }
@@ -423,27 +456,43 @@ fun MainScreen(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PhotosTopBar(isTraining: Boolean, onProfileClick: () -> Unit) {
+fun PhotosTopBar(
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
+    isTraining: Boolean,
+    onProfileClick: () -> Unit
+) {
     TopAppBar(
+        colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
         title = {
-            Surface(
-                tonalElevation = 3.dp,
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = onSearchQueryChange,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    .padding(end = 16.dp),
+                placeholder = { Text("Search tags or names", style = MaterialTheme.typography.bodyMedium) },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = FGTColors.TextSecondary) },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { onSearchQueryChange("") }) {
+                            Icon(Icons.Default.Close, contentDescription = "Clear")
+                        }
+                    }
+                },
                 shape = RoundedCornerShape(24.dp),
-                modifier = Modifier.fillMaxWidth().height(48.dp).padding(end = 16.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 16.dp)
-                ) {
-                    Icon(Icons.Default.Search, contentDescription = null, tint = FGTColors.TextSecondary)
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text("Search your photos", color = FGTColors.TextSecondary, style = MaterialTheme.typography.bodyMedium)
-                }
-            }
+                colors = OutlinedTextFieldDefaults.colors(
+                    unfocusedContainerColor = FGTColors.BgSurface,
+                    focusedContainerColor = FGTColors.BgSurface,
+                    unfocusedBorderColor = Color.Transparent,
+                    focusedBorderColor = FGTColors.AccentPrimary
+                )
+            )
         },
         actions = {
             IconButton(onClick = onProfileClick) {
-                Box {
+                Box(contentAlignment = Alignment.Center) {
                     Icon(
                         imageVector = Icons.Outlined.AccountCircle,
                         contentDescription = "Profile",
@@ -452,7 +501,7 @@ fun PhotosTopBar(isTraining: Boolean, onProfileClick: () -> Unit) {
                     )
                     if (isTraining) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(32.dp),
+                            modifier = Modifier.size(38.dp),
                             strokeWidth = 2.dp,
                             color = FGTColors.AccentPrimary
                         )
@@ -465,165 +514,42 @@ fun PhotosTopBar(isTraining: Boolean, onProfileClick: () -> Unit) {
 
 @Composable
 fun PhotosBottomNav(selectedTab: Int, onTabSelected: (Int) -> Unit) {
-    NavigationBar(containerColor = FGTColors.BgBase) {
-        val items = listOf(
-            Triple("Photos", Icons.Default.Photo, Icons.Outlined.Photo),
-            Triple("Explore", Icons.Default.Search, Icons.Outlined.Search),
-            Triple("Library", Icons.Default.CollectionsBookmark, Icons.Outlined.CollectionsBookmark)
-        )
-        items.forEachIndexed { index, (label, selectedIcon, unselectedIcon) ->
-            NavigationBarItem(
-                selected = selectedTab == index,
-                onClick = { onTabSelected(index) },
-                label = { Text(label) },
-                icon = { Icon(if (selectedTab == index) selectedIcon else unselectedIcon, contentDescription = label) }
-            )
-        }
-    }
-}
-
-@Composable
-fun PhotosScreen(photos: List<GalleryImage>) {
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(3),
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(1.dp),
-        horizontalArrangement = Arrangement.spacedBy(1.dp),
-        verticalArrangement = Arrangement.spacedBy(1.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp, vertical = 16.dp)
+            .height(64.dp)
+            .clip(RoundedCornerShape(32.dp))
+            .background(FGTColors.BgSurface.copy(alpha = 0.9f))
     ) {
-        items(photos) { photo ->
-            AsyncImage(
-                model = photo.uri,
-                contentDescription = null,
-                modifier = Modifier.aspectRatio(1f),
-                contentScale = ContentScale.Crop
-            )
-        }
-    }
-}
-
-@Composable
-fun ExploreScreen(
-    smartAlbums: List<GalleryAlbum>,
-    isScanning: Boolean,
-    onScanClick: () -> Unit
-) {
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Explore", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Spacer(modifier = Modifier.height(16.dp))
-
-        if (smartAlbums.isEmpty() && !isScanning) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Outlined.AutoAwesome, null, Modifier.size(64.dp), tint = FGTColors.AccentPrimary)
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("Your smart albums will appear here", textAlign = TextAlign.Center, color = FGTColors.TextSecondary)
-                    Spacer(modifier = Modifier.height(24.dp))
-                    Button(onClick = onScanClick) { Text("Scan & Organize") }
-                }
-            }
-        } else if (isScanning) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator()
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("Running smart classification...", color = FGTColors.TextSecondary)
-                }
-            }
-        } else {
-            // HIERARCHICAL VIEW
-            val categories = smartAlbums.groupBy { it.folderPath.substringBefore("/") }
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(24.dp)) {
-                categories.forEach { (catId, albums) ->
-                    item {
-                        Column {
-                            Text(
-                                text = catId.replaceFirstChar { it.uppercase() },
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = FGTColors.TextPrimary
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            LazyVerticalGrid(
-                                columns = GridCells.Fixed(2),
-                                modifier = Modifier.heightIn(max = 1000.dp), // Adjust or use non-nested grid if possible
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp),
-                                userScrollEnabled = false
-                            ) {
-                                items(albums) { album ->
-                                    SmartAlbumCard(album)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun SmartAlbumCard(album: GalleryAlbum) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Box(
-            modifier = Modifier
-                .aspectRatio(1f)
-                .clip(RoundedCornerShape(16.dp))
-                .background(FGTColors.BgSurface)
+        Row(
+            modifier = Modifier.fillMaxSize(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            AsyncImage(
-                model = album.images.firstOrNull()?.uri,
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
+            val items = listOf(
+                Icons.Default.Photo to "Photos",
+                Icons.Default.Search to "Explore",
+                Icons.Default.CollectionsBookmark to "Library"
             )
-        }
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(album.tagName, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text("${album.images.size} items", style = MaterialTheme.typography.bodySmall, color = FGTColors.TextSecondary)
-    }
-}
-
-@Composable
-fun LibraryScreen(smartAlbums: List<GalleryAlbum>) {
-    LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        item { Text("Library", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold) }
-        
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                LibraryActionItem("Favorites", Icons.Default.Favorite, Color(0xFFE91E63))
-                LibraryActionItem("Utilities", Icons.Default.Build, Color(0xFF607D8B))
-                LibraryActionItem("Archive", Icons.Default.Archive, Color(0xFF795548))
-                LibraryActionItem("Trash", Icons.Default.Delete, Color(0xFFF44336))
-            }
-        }
-
-        item {
-            Text("Photos on device", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 16.dp))
-        }
-
-        items(smartAlbums) { album ->
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                Box(Modifier.size(64.dp).clip(RoundedCornerShape(8.dp)).background(FGTColors.BgSurface)) {
-                    AsyncImage(model = album.images.firstOrNull()?.uri, contentDescription = null, contentScale = ContentScale.Crop)
-                }
-                Spacer(modifier = Modifier.width(16.dp))
-                Column {
-                    Text(album.tagName, fontWeight = FontWeight.Bold)
-                    Text("Pictures/FGT/${album.folderPath.substringAfter("/")}", style = MaterialTheme.typography.bodySmall, color = FGTColors.TextSecondary)
+            items.forEachIndexed { index, (icon, label) ->
+                val isSelected = selectedTab == index
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable { onTabSelected(index) }
+                        .padding(8.dp)
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = label,
+                        tint = if (isSelected) FGTColors.AccentPrimary else FGTColors.TextSecondary,
+                        modifier = Modifier.size(if (isSelected) 28.dp else 24.dp)
+                    )
                 }
             }
         }
-    }
-}
-
-@Composable
-fun LibraryActionItem(label: String, icon: ImageVector, color: Color) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Icon(icon, contentDescription = label, tint = color, modifier = Modifier.size(28.dp))
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(label, style = MaterialTheme.typography.labelSmall)
     }
 }
 
@@ -633,7 +559,8 @@ fun FLSyncDialog(
     isConnected: Boolean,
     isTraining: Boolean,
     onDismiss: () -> Unit,
-    onConnect: (String) -> Unit
+    onConnect: (String) -> Unit,
+    onDisconnect: () -> Unit
 ) {
     var codeInput by remember { mutableStateOf("") }
     AlertDialog(
@@ -648,7 +575,7 @@ fun FLSyncDialog(
                 Text(statusText, style = MaterialTheme.typography.bodyMedium, color = FGTColors.TextSecondary)
                 if (isTraining) {
                     Spacer(Modifier.height(12.dp))
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    LinearProgressIndicator(Modifier.fillMaxWidth(), color = FGTColors.AccentPrimary)
                 }
                 if (!isConnected) {
                     Spacer(Modifier.height(16.dp))
@@ -665,7 +592,10 @@ fun FLSyncDialog(
             if (!isConnected) {
                 Button(onClick = { onConnect(codeInput) }) { Text("Sync Now") }
             } else {
-                TextButton(onClick = onDismiss) { Text("Done") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onDisconnect, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Disconnect") }
+                    TextButton(onClick = onDismiss) { Text("Done") }
+                }
             }
         }
     )
@@ -676,9 +606,9 @@ fun PermissionScreen(onRequest: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
         Icon(Icons.Outlined.PhotoLibrary, null, Modifier.size(80.dp), tint = FGTColors.AccentPrimary)
         Spacer(Modifier.height(24.dp))
-        Text("Allow access to your photos", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Text("Allow access to your photos", style = MaterialTheme.typography.headlineSmall, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, color = FGTColors.TextPrimary)
         Spacer(Modifier.height(12.dp))
-        Text("To organize your gallery automatically, FGT needs permission to see your photos. Your photos never leave this device.", textAlign = TextAlign.Center, color = FGTColors.TextSecondary)
+        Text("To organize your gallery automatically, FGT needs permission to see your photos. Your photos never leave this device.", textAlign = androidx.compose.ui.text.style.TextAlign.Center, color = FGTColors.TextSecondary)
         Spacer(Modifier.height(32.dp))
         Button(onClick = onRequest, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text("Allow Access") }
     }

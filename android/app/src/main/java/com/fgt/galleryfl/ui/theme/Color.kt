@@ -3,19 +3,20 @@ package com.fgt.galleryfl.ui.theme
 import androidx.compose.ui.graphics.Color
 
 object FGTColors {
-    val BgBase = Color(0xFFF0E4D7)
-    val BgSurface = Color(0xFFEAD9C8)
-    val BgSidebar = Color(0xFFE5D3C1)
-
-    val ShadowLight = Color(0xFFFDFAF6)
-    val ShadowDark = Color(0xFFC9B9A5)
+    val BgBase = Color(0xFF0B0E14)      // Midnight Navy
+    val BgSurface = Color(0xFF161B22)   // Deep Slate
+    val BgGlass = Color(0x33FFFFFF)     // Translucent White
     
-    val AccentPrimary = Color(0xFFD4845A)
-    val AccentGold = Color(0xFFE8B87A)
-    val TextPrimary = Color(0xFF3D2B1F)
-    val TextSecondary = Color(0xFF7A6355)
+    val AccentPrimary = Color(0xFF6366F1) // Electric Indigo
+    val AccentSecondary = Color(0xFF818CF8)
+    
+    val TextPrimary = Color(0xFFF9FAFB)
+    val TextSecondary = Color(0xFF9CA3AF)
+    
+    val GlassOverlay = Color(0x80000000)
+    val Error = Color(0xFFEF4444)
 }
 
 val PrimaryColor = FGTColors.AccentPrimary
-val AccentColor = FGTColors.AccentGold
+val AccentColor = FGTColors.AccentSecondary
 val NeutralColor = FGTColors.TextPrimary

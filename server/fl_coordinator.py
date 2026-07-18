@@ -223,3 +223,17 @@ class FLCoordinator:
             subprocess.Popen(["python", "prep_model.py", "evaluate"])
         except Exception as e:
             logging.error(f"Evaluation failed: {e}")
+
+    async def on_client_disconnected(self, client_id: str) -> None:
+        if client_id in self.round_participants:
+            self.round_participants.discard(client_id)
+            logging.info(f"Client {client_id[:8]} disconnected. Removed from round participants. Remaining: {len(self.round_participants)}")
+            # Clean up their update if they disconnected before aggregation
+            self.client_updates.pop(client_id, None)
+            self.client_metadata.pop(client_id, None)
+            
+            # If we now have enough updates from the remaining participants, aggregate!
+            expected = len(self.round_participants)
+            if self.is_training and len(self.client_updates) >= max(self.config.min_clients, expected) and expected > 0:
+                asyncio.create_task(self._aggregate_and_advance())
+

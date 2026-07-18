@@ -263,6 +263,13 @@ async function refreshStatus() {
         document.getElementById('param-count').innerText = formatNumber(data.total_parameters);
         document.getElementById('access-code').innerText = data.access_code || '-';
 
+        // Extract the true LAN IP from the access code (e.g. 192.168.x.x:8000)
+        if (data.access_code && data.access_code.includes('@')) {
+            document.getElementById('lan-ip').innerText = data.access_code.split('@')[0];
+        } else {
+            document.getElementById('lan-ip').innerText = window.location.host;
+        }
+
         // Sync online clients list from endpoint status response
         if (data.online_clients) {
             const newClients = {};

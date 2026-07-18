@@ -16,6 +16,15 @@ data class GalleryImage(
     val dateAdded: Long
 )
 
+data class GalleryAlbum(
+    val folderPath: String,
+    val tagName: String,
+    val images: List<GalleryImage>,
+    val averageConfidence: Float,
+    val thresholdUsed: Float,
+    val localPersonalizationAffected: Boolean
+)
+
 class GalleryRepository(private val context: Context) {
 
     suspend fun loadBitmap(uri: Uri): Bitmap? = withContext(Dispatchers.IO) {
@@ -71,6 +80,6 @@ class GalleryRepository(private val context: Context) {
                 images.add(GalleryImage(id, uri, name, date))
             }
         }
-        images
+        images.sortedByDescending { it.dateAdded }
     }
 }

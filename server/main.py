@@ -92,6 +92,35 @@ async def startup_event():
             
     threading.Thread(target=listen_udp, daemon=True).start()
 
+    # Start background cleanup task for inactive clients (heartbeat timeout)
+    import time
+    async def cleanup_offline_clients():
+        while True:
+            await asyncio.sleep(10)
+            now = time.time()
+            to_disconnect = []
+            for cid, meta in list(coordinator.registered_clients.items()):
+                if cid == "dashboard":
+                    continue
+                # If they haven't sent a heartbeat in 30 seconds, clean them up
+                if now - meta.get("last_heartbeat", 0) > 30:
+                    to_disconnect.append(cid)
+            
+            for cid in to_disconnect:
+                logging.info(f"Cleaning up inactive client {cid[:8]} due to heartbeat timeout")
+                ws = ws_manager.active_connections.get(cid)
+                if ws:
+                    try:
+                        await ws.close(code=4000, reason="Heartbeat timeout")
+                    except Exception:
+                        pass
+                ws_manager.disconnect(cid)
+                await coordinator.on_client_disconnected(cid)
+                coordinator.registered_clients.pop(cid, None)
+                await ws_manager.broadcast({"type": "client_disconnected", "data": {"client_id": cid}})
+                
+    asyncio.create_task(cleanup_offline_clients())
+
     logging.info("=========================================")
     logging.info("          FGT SERVER STARTUP             ")
     logging.info("=========================================")
@@ -204,7 +233,7 @@ async def get_training_status():
         "total_parameters": model_manager.get_total_parameters(),
         "connected_clients": len(online_list),
         "registered_clients": len(coordinator.registered_clients),
-        "access_code": config.server_token,
+        "access_code": f"{get_lan_ip()}:{config.port}@{config.server_token}",
         "online_clients": online_list
     }
 
@@ -229,7 +258,7 @@ async def regenerate_token():
             
     await ws_manager.broadcast({"type": "clients_cleared"})
     logging.info(f"Regenerated access token. All old registrations revoked. New FGT Access Code: {config.server_token}")
-    return {"access_code": config.server_token}
+    return {"access_code": f"{get_lan_ip()}:{config.port}@{config.server_token}"}
 
 @app.get("/api/metrics/history")
 async def get_metrics_history():
@@ -346,4 +375,5 @@ async def websocket_endpoint(websocket: WebSocket):
                     logging.debug("Ignoring malformed WebSocket message from %s", client_id[:8])
     except WebSocketDisconnect:
         ws_manager.disconnect(client_id)
+        await coordinator.on_client_disconnected(client_id)
         await ws_manager.broadcast({"type": "client_disconnected", "data": {"client_id": client_id}})

@@ -26,8 +26,8 @@ fun NeuSurface(
             .shadow(
                 elevation = 8.dp,
                 shape = RoundedCornerShape(cornerRadius),
-                ambientColor = FGTColors.ShadowDark,
-                spotColor = FGTColors.ShadowDark
+                ambientColor = Color.Black.copy(alpha = 0.5f),
+                spotColor = Color.Black.copy(alpha = 0.5f)
             ),
         shape = RoundedCornerShape(cornerRadius),
         color = FGTColors.BgBase
