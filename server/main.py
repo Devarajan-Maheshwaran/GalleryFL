@@ -42,10 +42,10 @@ app.mount("/dashboard", StaticFiles(directory="dashboard", html=True), name="das
 config = ServerConfig.load_or_default()
 metrics_store = MetricsStore()
 model_manager = ModelManager()
-coordinator = FLCoordinator(config, metrics_store, model_manager)
 audit_log = AuditLog()
 trust_scorer = TrustScorer()
 rate_limiter = RateLimiter()
+coordinator = FLCoordinator(config, metrics_store, model_manager, trust_scorer)
 historical_norms: list = []
 
 def encrypt_access_code(url: str, token: str) -> str:
@@ -124,8 +124,18 @@ async def register_client(req: RegisterRequest):
     return {"client_id": client_id, "status": "registered", "model_version": model_manager.current_version}
 
 @app.get("/api/model/current")
-async def get_current_model():
-    return Response(content=model_manager.get_serialized_weights(), media_type="text/plain")
+async def get_current_model(client_version: int = 0):
+    if client_version == model_manager.current_version - 1 and hasattr(model_manager, 'last_delta'):
+        return Response(
+            content=model_manager.get_serialized_delta(), 
+            media_type="text/plain", 
+            headers={"X-Model-Format": "delta", "X-Model-Version": str(model_manager.current_version)}
+        )
+    return Response(
+        content=model_manager.get_serialized_weights(), 
+        media_type="text/plain",
+        headers={"X-Model-Format": "full", "X-Model-Version": str(model_manager.current_version)}
+    )
 
 @app.post("/api/training/submit-update", dependencies=[Depends(verify_token)])
 async def submit_update(req: ClientUpdateRequest):
@@ -235,18 +245,43 @@ async def start_training(req: Optional[TrainingStartRequest] = None):
 
 @app.get("/api/metrics/comparison")
 async def get_comparison():
-    categories = ["people", "places", "activities", "objects", "documents", "nature", "events"]
-    # Static baseline F1-scores
-    baseline = [0.65, 0.58, 0.72, 0.50, 0.60, 0.78, 0.62]
+    categories = []
     
-    if not coordinator.metrics_store.history:
-        federated = list(baseline)
-    else:
-        latest_acc = coordinator.metrics_store.history[-1].global_accuracy
-        # Baseline average is approximately 0.635
-        gain = max(0.0, latest_acc - 0.635)
-        federated = [min(0.98, b + gain) for b in baseline]
-        
+    import json as json_mod
+    tax_path = "taxonomy.json"
+    if os.path.exists(tax_path):
+        try:
+            with open(tax_path, "r") as tf:
+                tax = json_mod.load(tf)
+                categories = [c["id"] for c in tax.get("categories", [])]
+        except Exception:
+            pass
+            
+    if not categories:
+        categories = ["people", "places", "activities", "objects", "documents", "nature", "events"]
+
+    def compute_scores(eval_file):
+        scores = [0.0] * len(categories)
+        if os.path.exists(eval_file) and os.path.exists(tax_path):
+            try:
+                with open(eval_file, "r") as f:
+                    data = json_mod.load(f)
+                with open(tax_path, "r") as tf:
+                    tax = json_mod.load(tf)
+                
+                for i, cat in enumerate(categories):
+                    cat_node = next((c for c in tax.get("categories", []) if c["id"] == cat), None)
+                    if cat_node and "children" in cat_node:
+                        leaf_names = cat_node["children"]
+                        cat_f1s = [data.get("per_class", {}).get(name, {}).get("f1", 0.0) for name in leaf_names]
+                        scores[i] = sum(cat_f1s) / len(cat_f1s) if cat_f1s else 0.0
+            except Exception as e:
+                logging.error(f"Failed to read real evaluation metrics from {eval_file}: {e}")
+        return scores
+
+    baseline = compute_scores("output/bootstrap_eval_report.json")
+    federated = compute_scores("output/latest_eval.json")
+    
     return {
         "categories": categories,
         "baseline": baseline,

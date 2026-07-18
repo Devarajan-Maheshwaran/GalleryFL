@@ -10,10 +10,11 @@ from security import validate_update
 import logging
 
 class FLCoordinator:
-    def __init__(self, config: ServerConfig, metrics_store: MetricsStore, model_manager: ModelManager):
+    def __init__(self, config: ServerConfig, metrics_store: MetricsStore, model_manager: ModelManager, trust_scorer=None):
         self.config = config
         self.metrics_store = metrics_store
         self.model_manager = model_manager
+        self.trust_scorer = trust_scorer
 
         self.current_round: int = 0
         self.is_training: bool = False
@@ -95,7 +96,8 @@ class FLCoordinator:
             client_id=client_id,
             nickname=self.registered_clients.get(client_id, {}).get("nickname", client_id[:8]),
             images=metadata.get("num_samples", 0),
-            local_acc=metadata.get("local_accuracy", 0.0)
+            local_acc=metadata.get("local_accuracy", 0.0),
+            epsilon_used=self.config.dp_epsilon
         )
 
         expected = len(self.get_online_registered())
@@ -112,7 +114,16 @@ class FLCoordinator:
         logging.info(f"=== [AGGREGATING] Aggregating {num_updates} client updates for round {self.current_round} ===")
 
         aggregated = self._trimmed_mean_aggregate()
+        
+        # Apply FedProx Proximal Term on Server Side
+        mu = self.config.mu
+        for i in range(len(aggregated)):
+            aggregated[i] = (1 - mu) * aggregated[i] + mu * self.model_manager.global_weights[i]
+
         self.model_manager.update_global_weights(aggregated)
+        
+        # Trigger async evaluation
+        asyncio.create_task(self._run_evaluation())
 
         avg_loss = float(np.mean([m.get("local_loss", 0.0) for m in self.client_metadata.values()]))
         avg_acc = float(np.mean([m.get("local_accuracy", 0.0) for m in self.client_metadata.values()]))
@@ -127,13 +138,20 @@ class FLCoordinator:
             total_samples=total_samples,
             client_contributions={cid: m.get("num_samples", 0) for cid, m in self.client_metadata.items()}
         )
+        converged = False
+        if len(self.metrics_store.history) > 0:
+            prev_loss = self.metrics_store.history[-1].global_loss
+            if abs(avg_loss - prev_loss) < self.config.convergence_threshold:
+                converged = True
+
         self.metrics_store.log_round(metrics)
 
         await ws_manager.broadcast({"type": "round_completed", "data": metrics.model_dump()})
 
-        if self.current_round >= self.config.max_rounds:
+        if self.current_round >= self.config.max_rounds or converged:
             elapsed = time.time() - self.session_start_time
-            logging.info(f"Training complete after {self.current_round} rounds ({elapsed:.0f}s)")
+            reason = "converged" if converged else "max_rounds_reached"
+            logging.info(f"Training complete after {self.current_round} rounds ({elapsed:.0f}s) - {reason}")
             self.is_training = False
             await ws_manager.broadcast({
                 "type": "training_complete",
@@ -141,7 +159,8 @@ class FLCoordinator:
                     "final_round": self.current_round,
                     "final_accuracy": avg_acc,
                     "final_loss": avg_loss,
-                    "duration_seconds": round(elapsed, 1)
+                    "duration_seconds": round(elapsed, 1),
+                    "reason": reason
                 }
             })
         else:
@@ -156,7 +175,15 @@ class FLCoordinator:
         aggregated = []
         num_layers = len(self.model_manager.global_weights)
         sample_counts = np.array([self.client_metadata[cid].get("num_samples", 1) for cid in self.client_updates])
-        sample_weights = sample_counts / sample_counts.sum()
+        
+        # Apply trust scores
+        if self.trust_scorer:
+            trust_scores = np.array([self.trust_scorer.get_score(cid) for cid in self.client_updates])
+        else:
+            trust_scores = np.ones_like(sample_counts, dtype=float)
+            
+        effective_weights = sample_counts * trust_scores
+        sample_weights = effective_weights / (effective_weights.sum() + 1e-9)
 
         for i in range(num_layers):
             layer_updates = [self.client_updates[cid][i] for cid in self.client_updates]
@@ -178,3 +205,11 @@ class FLCoordinator:
             aggregated.append(mean_layer.astype(np.float32))
 
         return aggregated
+
+    async def _run_evaluation(self):
+        try:
+            import subprocess
+            logging.info("Starting background model evaluation on server...")
+            subprocess.Popen(["python", "prep_model.py", "evaluate"])
+        except Exception as e:
+            logging.error(f"Evaluation failed: {e}")

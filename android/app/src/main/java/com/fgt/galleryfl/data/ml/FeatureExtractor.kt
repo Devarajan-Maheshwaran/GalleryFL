@@ -9,6 +9,11 @@ import java.nio.ByteOrder
 import java.nio.channels.FileChannel
 import java.io.FileInputStream
 
+data class ExtractedFeatures(
+    val projection: FloatArray,
+    val spatialMap: FloatArray
+)
+
 class FeatureExtractor(private val context: Context) {
 
     private var interpreter: Interpreter? = null
@@ -17,13 +22,18 @@ class FeatureExtractor(private val context: Context) {
     private val IMAGE_SIZE = 224
     private val CHANNELS = 3
     private val BYTES_PER_CHANNEL = 4
-    private val FEATURE_SIZE = 960
+    private val FEATURE_SIZE = 1024
+    private val SPATIAL_SIZE = 7 * 7 * 1024
 
     private val inputBuffer = ByteBuffer.allocateDirect(1 * IMAGE_SIZE * IMAGE_SIZE * CHANNELS * BYTES_PER_CHANNEL).apply {
         order(ByteOrder.nativeOrder())
     }
 
-    private val outputBuffer = ByteBuffer.allocateDirect(1 * FEATURE_SIZE * BYTES_PER_CHANNEL).apply {
+    private val outputBufferSpatial = ByteBuffer.allocateDirect(1 * SPATIAL_SIZE * BYTES_PER_CHANNEL).apply {
+        order(ByteOrder.nativeOrder())
+    }
+    
+    private val outputBufferProj = ByteBuffer.allocateDirect(1 * FEATURE_SIZE * BYTES_PER_CHANNEL).apply {
         order(ByteOrder.nativeOrder())
     }
 
@@ -47,7 +57,8 @@ class FeatureExtractor(private val context: Context) {
         return fileChannel.map(FileChannel.MapMode.READ_ONLY, fileDescriptor.startOffset, fileDescriptor.declaredLength)
     }
 
-    fun extractFeatures(bitmap: Bitmap): FloatArray {
+    @Synchronized
+    fun extractFeatures(bitmap: Bitmap): ExtractedFeatures {
         val resized = Bitmap.createScaledBitmap(bitmap, IMAGE_SIZE, IMAGE_SIZE, true)
 
         inputBuffer.rewind()
@@ -60,13 +71,27 @@ class FeatureExtractor(private val context: Context) {
             inputBuffer.putFloat(((pixel and 0xFF) / 127.5f) - 1f)
         }
 
-        outputBuffer.rewind()
-        interpreter?.run(inputBuffer, outputBuffer)
+        outputBufferSpatial.rewind()
+        outputBufferProj.rewind()
+        
+        // TF Lite outputs are mapped by index. 
+        // Index 0: spatial map, Index 1: projection (based on outputs=[base_model.output, projection])
+        val outputs = mapOf(
+            0 to outputBufferSpatial,
+            1 to outputBufferProj
+        )
+        
+        interpreter?.runForMultipleInputsOutputs(arrayOf(inputBuffer), outputs)
 
-        outputBuffer.rewind()
-        val features = FloatArray(FEATURE_SIZE)
-        outputBuffer.asFloatBuffer().get(features)
-        return features
+        outputBufferSpatial.rewind()
+        val spatialFeatures = FloatArray(SPATIAL_SIZE)
+        outputBufferSpatial.asFloatBuffer().get(spatialFeatures)
+        
+        outputBufferProj.rewind()
+        val projectionFeatures = FloatArray(FEATURE_SIZE)
+        outputBufferProj.asFloatBuffer().get(projectionFeatures)
+        
+        return ExtractedFeatures(projectionFeatures, spatialFeatures)
     }
 
     fun close() {

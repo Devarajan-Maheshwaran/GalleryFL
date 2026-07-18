@@ -49,9 +49,9 @@ def build_full_model(num_classes: int):
     )
     base_model.trainable = False
     
-    pool = tf.keras.layers.GlobalAveragePooling2D()(base_model.output)
-    projection = tf.keras.layers.Dense(1024, activation='relu', name='backbone_projection')(pool)
-    frozen_base = tf.keras.Model(inputs=base_model.input, outputs=projection)
+    spatial_proj = tf.keras.layers.Dense(1024, activation='relu', name='backbone_projection')(base_model.output)
+    pool = tf.keras.layers.GlobalAveragePooling2D()(spatial_proj)
+    frozen_base = tf.keras.Model(inputs=base_model.input, outputs=pool)
     frozen_base.trainable = False
     
     x = tf.keras.layers.Dense(256, activation='relu', name='dense_1')(frozen_base.output)
@@ -59,7 +59,9 @@ def build_full_model(num_classes: int):
     outputs = tf.keras.layers.Dense(num_classes, activation='sigmoid', name='dense_2')(x)
     
     full_model = tf.keras.Model(inputs=frozen_base.input, outputs=outputs)
-    return frozen_base, full_model
+    
+    tflite_base = tf.keras.Model(inputs=base_model.input, outputs=[spatial_proj, pool])
+    return frozen_base, full_model, tflite_base
 
 def cmd_prepare(args):
     print("=== PREPARE MODE ===")
@@ -69,10 +71,9 @@ def cmd_prepare(args):
     print(f"Loaded taxonomy with {num_classes} leaf classes.")
     
     os.makedirs("models", exist_ok=True)
+    frozen_base, full_model, tflite_base = build_full_model(num_classes)
     
-    frozen_base, full_model = build_full_model(num_classes)
-    
-    converter = tf.lite.TFLiteConverter.from_keras_model(frozen_base)
+    converter = tf.lite.TFLiteConverter.from_keras_model(tflite_base)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
     tflite_model = converter.convert()
     
@@ -176,7 +177,7 @@ def cmd_bootstrap_train(args):
         print("Training CSV missing. Exiting.")
         return
         
-    frozen_base, full_model = build_full_model(num_classes)
+    frozen_base, full_model, _ = build_full_model(num_classes)
     
     full_model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
@@ -231,9 +232,9 @@ def cmd_evaluate(args):
     classes = parser.leaf_names
     num_classes = parser.num_classes
     
-    npz_path = "models/initial_head_weights.npz"
+    npz_path = args.weights
     if not os.path.exists(npz_path):
-        print(f"{npz_path} not found. Run bootstrap_train first.")
+        print(f"{npz_path} not found.")
         return
         
     val_ds = create_dataset("../data/bootstrap_seed/labels_val.csv", "../data/bootstrap_seed", classes, batch_size=32, is_training=False)
@@ -241,7 +242,7 @@ def cmd_evaluate(args):
         print("Validation set missing.")
         return
         
-    frozen_base, full_model = build_full_model(num_classes)
+    frozen_base, full_model, _ = build_full_model(num_classes)
     
     # Load weights
     data = np.load(npz_path)
@@ -283,11 +284,11 @@ def cmd_evaluate(args):
         }
         
     os.makedirs("output", exist_ok=True)
-    with open("output/bootstrap_eval_report.json", "w") as f:
+    with open("output/latest_eval.json", "w") as f:
         json.dump(report, f, indent=2)
         
     print(f"Evaluation complete. Macro F1: {macro_f1:.4f}")
-    print("Saved report to output/bootstrap_eval_report.json")
+    print("Saved report to output/latest_eval.json")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FGT Model Preparation and Training Pipeline")
@@ -301,6 +302,7 @@ if __name__ == "__main__":
     parser_train.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     
     parser_eval = subparsers.add_parser("evaluate", help="Evaluate model against local validation set")
+    parser_eval.add_argument("--weights", type=str, default="models/head_weights.npz", help="Weights to evaluate")
     
     args = parser.parse_args()
     

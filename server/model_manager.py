@@ -144,10 +144,28 @@ class ModelManager:
     def update_global_weights(self, new_weights: List[np.ndarray]):
         for w, (name, shape) in zip(new_weights, LAYER_SCHEMA):
             assert w.shape == shape, f"{name}: expected {shape}, got {w.shape}"
+            
+        if self.global_weights:
+            self.last_delta = [w - old for w, old in zip(new_weights, self.global_weights)]
+            
         self.global_weights = [w.astype(np.float32) for w in new_weights]
         self.current_version += 1
         self._save_snapshot()
         logging.info(f"Global model updated to v{self.current_version}")
+
+    def get_serialized_delta(self) -> str:
+        if not hasattr(self, 'last_delta') or not self.last_delta:
+            return self.get_serialized_weights()
+            
+        byte_chunks = []
+        for w, (name, shape) in zip(self.last_delta, LAYER_SCHEMA):
+            flat = w.flatten()
+            layer_bytes = flat.astype('<f4').tobytes()
+            byte_chunks.append(struct.pack('<I', len(layer_bytes)) + layer_bytes)
+
+        combined = b''.join(byte_chunks)
+        compressed = zlib.compress(combined, level=6)
+        return base64.b64encode(compressed).decode('ascii')
 
     def get_weight_shapes(self) -> List[Tuple[int, ...]]:
         return [shape for _, shape in LAYER_SCHEMA]

@@ -15,13 +15,13 @@ class LocalTrainer(
     private val noiseInjector: DPNoiseInjector = DPNoiseInjector()
 ) {
     private val mu = 0.01f
-    private val lr = 0.05f
 
     fun train(
         featuresList: List<FloatArray>,
         targetsList: List<FloatArray>,
         globalWeights: List<FloatArray>,
-        epochs: Int = 3
+        epochs: Int = 3,
+        lr: Float = 0.001f
     ): TrainingResult {
         head.setWeightsFlat(globalWeights)
 

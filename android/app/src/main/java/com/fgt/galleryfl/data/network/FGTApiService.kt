@@ -14,7 +14,9 @@ interface FGTApiService {
     ): RegisterResponse
 
     @GET("api/model/current")
-    suspend fun getCurrentModel(): ResponseBody
+    suspend fun getCurrentModel(
+        @retrofit2.http.Query("client_version") clientVersion: Int = 0
+    ): retrofit2.Response<ResponseBody>
 
     @POST("api/training/submit-update")
     suspend fun submitUpdate(

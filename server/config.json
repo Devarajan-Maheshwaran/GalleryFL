@@ -1,6 +1,6 @@
 {
   "host": "0.0.0.0",
-  "port": 8080,
+  "port": 8000,
   "min_clients": 1,
   "max_rounds": 10,
   "local_epochs": 3,
@@ -12,7 +12,7 @@
   "dp_delta": 1e-05,
   "max_grad_norm": 1.0,
   "convergence_threshold": 0.001,
-  "server_token": "c12abc90",
+  "server_token": "ace968d5",
   "model_path": "models/base_model.tflite",
   "validation_dir": "validation_data/",
   "output_dir": "output/"

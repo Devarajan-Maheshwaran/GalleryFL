@@ -8,7 +8,7 @@ import org.json.JSONObject
 
 class FGTWebSocketClient(private val client: OkHttpClient) {
     private var webSocket: WebSocket? = null
-    var onUpdateRequested: ((Int) -> Unit)? = null
+    var onUpdateRequested: ((Int, Float, Int) -> Unit)? = null
     var onRoundCompleted: ((Int) -> Unit)? = null
     var onTrainingComplete: (() -> Unit)? = null
 
@@ -28,7 +28,10 @@ class FGTWebSocketClient(private val client: OkHttpClient) {
                 when (json.optString("type")) {
                     "update_requested" -> {
                         val round = data?.getInt("round") ?: return
-                        onUpdateRequested?.invoke(round)
+                        val config = data.optJSONObject("config")
+                        val lr = config?.optDouble("lr", 0.05)?.toFloat() ?: 0.05f
+                        val epochs = config?.optInt("local_epochs", 3) ?: 3
+                        onUpdateRequested?.invoke(round, lr, epochs)
                     }
                     "round_completed" -> {
                         val round = data?.getInt("round") ?: return

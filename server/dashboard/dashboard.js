@@ -5,12 +5,12 @@ let clients = {};
 let isTraining = false;
 
 const COLORS = {
-    primary: '#E8B87A',
-    gold: '#D4845A',
-    text: '#333333',
-    grid: 'rgba(0, 0, 0, 0.04)',
-    fill: 'rgba(232, 184, 122, 0.08)',
-    fillLoss: 'rgba(212, 132, 90, 0.08)',
+    primary: '#007aff', /* Apple Blue */
+    gold: '#ff9500', /* Apple Orange */
+    text: '#86868b',
+    grid: 'rgba(0, 0, 0, 0.05)',
+    fill: 'rgba(0, 122, 255, 0.1)',
+    fillLoss: 'rgba(255, 149, 0, 0.1)',
 };
 
 function initCharts() {
@@ -73,15 +73,15 @@ function initCharts() {
                 {
                     label: 'Baseline (Pre-trained)',
                     data: [],
-                    backgroundColor: 'rgba(122, 99, 85, 0.4)',
-                    borderColor: 'rgba(122, 99, 85, 1)',
+                    backgroundColor: 'rgba(0, 0, 0, 0.05)',
+                    borderColor: 'rgba(0, 0, 0, 0.2)',
                     borderWidth: 1
                 },
                 {
                     label: 'Federated Model',
                     data: [],
-                    backgroundColor: '#D4845A',
-                    borderColor: '#D4845A',
+                    backgroundColor: 'rgba(0, 122, 255, 0.2)',
+                    borderColor: '#007aff',
                     borderWidth: 1
                 }
             ]
@@ -105,8 +105,8 @@ function initCharts() {
             datasets: [{
                 label: 'F1 Score',
                 data: [],
-                backgroundColor: 'rgba(122, 158, 126, 0.7)',
-                borderColor: '#7A9E7E',
+                backgroundColor: 'rgba(88, 86, 214, 0.2)', /* Apple Indigo */
+                borderColor: '#5856d6',
                 borderWidth: 1
             }]
         },
@@ -291,6 +291,7 @@ async function refreshLeaderboard() {
                 <td class="mono">${c.images}</td>
                 <td class="mono">${c.rounds}</td>
                 <td class="mono">${c.score}</td>
+                <td class="mono">${c.epsilon}</td>
             `;
             tbody.appendChild(tr);
         });

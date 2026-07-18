@@ -11,6 +11,7 @@ class ClientContribution(BaseModel):
     images_contributed: int = 0
     avg_local_accuracy: float = 0.0
     trust_score: float = 1.0
+    cumulative_epsilon: float = 0.0
 
 class RoundMetrics(BaseModel):
     round: int
@@ -53,13 +54,16 @@ class MetricsStore:
         self.history.append(metrics)
         self.save()
 
-    def update_client_contribution(self, client_id: str, nickname: str, images: int, local_acc: float):
+    def update_client_contribution(self, client_id: str, nickname: str, images: int, local_acc: float, epsilon_used: float = 1.0):
         if client_id not in self.client_cumulative:
             self.client_cumulative[client_id] = ClientContribution(client_id=client_id, nickname=nickname)
         c = self.client_cumulative[client_id]
         c.rounds_participated += 1
         c.images_contributed += images
         c.avg_local_accuracy = ((c.avg_local_accuracy * (c.rounds_participated - 1)) + local_acc) / c.rounds_participated
+        
+        # Advanced composition approx (sqrt of rounds)
+        c.cumulative_epsilon = epsilon_used * (c.rounds_participated ** 0.5)
         self.save()
 
     def get_leaderboard(self) -> List[dict]:
@@ -80,7 +84,8 @@ class MetricsStore:
                 "images": c.images_contributed,
                 "rounds": c.rounds_participated,
                 "accuracy": round(c.avg_local_accuracy, 4),
-                "score": round(score, 4)
+                "score": round(score, 4),
+                "epsilon": round(c.cumulative_epsilon, 4)
             })
         ranked.sort(key=lambda x: x["score"], reverse=True)
         return ranked
