@@ -47,24 +47,62 @@ fun PhotosScreen(
             )
         }
 
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(3),
-            state = gridState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(1.dp),
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            items(photos, key = { it.id }) { photo ->
-                AsyncImage(
-                    model = photo.uri,
-                    contentDescription = null,
-                    modifier = Modifier
-                        .aspectRatio(1f)
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable { onImageClick(photo) },
-                    contentScale = ContentScale.Crop
-                )
+        if (photos.isEmpty()) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(32.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = FGTColors.BgSurface,
+                        tonalElevation = 2.dp
+                    ) {
+                        Text(
+                            "🖼",
+                            fontSize = 40.sp,
+                            modifier = Modifier.padding(20.dp)
+                        )
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        "No photos yet",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = FGTColors.TextPrimary
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Your gallery will appear here once photos are available on this device.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = FGTColors.TextSecondary,
+                        modifier = Modifier.padding(horizontal = 24.dp)
+                    )
+                }
+            }
+        } else {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(3),
+                state = gridState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(1.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                items(photos, key = { it.id }) { photo ->
+                    AsyncImage(
+                        model = photo.uri,
+                        contentDescription = null,
+                        modifier = Modifier
+                            .aspectRatio(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onImageClick(photo) },
+                        contentScale = ContentScale.Crop
+                    )
+                }
             }
         }
     }

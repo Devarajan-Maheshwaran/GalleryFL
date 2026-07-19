@@ -9,7 +9,8 @@ data class OrganizePreviewSummary(
     val imageCount: Int,
     val averageConfidence: Float,
     val thresholdUsed: Float,
-    val localPersonalizationAffected: Boolean
+    val localPersonalizationAffected: Boolean,
+    val assignedImages: List<String> = emptyList()
 )
 
 data class ImagePrediction(
@@ -29,6 +30,7 @@ class OrganizeGalleryUseCase(
         
         // Maps classIndex -> list of confidences for images that matched
         val classMatches = mutableMapOf<Int, MutableList<Float>>()
+        val classImageIds = mutableMapOf<Int, MutableList<String>>()
         val personalizationAffected = mutableMapOf<Int, Boolean>()
 
         for (image in images) {
@@ -45,6 +47,7 @@ class OrganizeGalleryUseCase(
                 
                 if (isMatch) {
                     classMatches.getOrPut(i) { mutableListOf() }.add(score)
+                    classImageIds.getOrPut(i) { mutableListOf() }.add(image.imageId)
                 }
 
                 if (isMatch != isMatchWithoutBias) {
@@ -70,7 +73,8 @@ class OrganizeGalleryUseCase(
                         imageCount = count,
                         averageConfidence = avgConfidence,
                         thresholdUsed = thresholds[classIndex],
-                        localPersonalizationAffected = affected
+                        localPersonalizationAffected = affected,
+                        assignedImages = classImageIds[classIndex] ?: emptyList()
                     )
                 )
             }

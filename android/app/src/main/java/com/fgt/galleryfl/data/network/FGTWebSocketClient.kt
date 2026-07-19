@@ -24,7 +24,7 @@ class FGTWebSocketClient(private val client: OkHttpClient) {
 
     private data class Connection(val serverUrl: String, val clientId: String, val token: String)
 
-    var onUpdateRequested: ((Int, Float, Int, Float) -> Unit)? = null
+    var onUpdateRequested: ((Int, Float, Int, Float, Float, Float, Float) -> Unit)? = null
     var onRoundCompleted: ((Int) -> Unit)? = null
     var onTrainingComplete: (() -> Unit)? = null
     var onConnectionChanged: ((Boolean, String?) -> Unit)? = null
@@ -72,7 +72,10 @@ class FGTWebSocketClient(private val client: OkHttpClient) {
                         val lr = config?.optDouble("lr", 0.05)?.toFloat() ?: 0.05f
                         val epochs = config?.optInt("local_epochs", 3) ?: 3
                         val mu = config?.optDouble("mu", 0.01)?.toFloat() ?: 0.01f
-                        onUpdateRequested?.invoke(round, lr, epochs, mu)
+                        val dpEpsilon = config?.optDouble("dp_epsilon", 0.0)?.toFloat() ?: 0.0f
+                        val dpDelta = config?.optDouble("dp_delta", 1e-5)?.toFloat() ?: 1e-5f
+                        val maxGradNorm = config?.optDouble("max_grad_norm", 1.0)?.toFloat() ?: 1.0f
+                        onUpdateRequested?.invoke(round, lr, epochs, mu, dpEpsilon, dpDelta, maxGradNorm)
                     }
                     "round_completed" -> {
                         val round = data?.getInt("round") ?: return

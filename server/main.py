@@ -13,7 +13,7 @@ import numpy as np
 import socket
 import base64
 import json
-from typing import Optional
+from typing import Optional, List
 
 from config import ServerConfig
 from metrics import MetricsStore
@@ -21,6 +21,20 @@ from model_manager import ModelManager
 from fl_coordinator import FLCoordinator
 from ws_manager import ws_manager
 from security import validate_update, AuditLog, TrustScorer, RateLimiter
+from taxonomy_parser import TaxonomyParser
+from tag_demand import TagDemandStore
+
+# Additive product feature: recency-weighted demand over taxonomy tags.
+# Clients POST the tags they actually use (applied while organizing, or predicted
+# with high confidence). This store powers the dashboard's Trending Tags view and
+# is fully decoupled from the FL training loop, aggregation, and WebSocket stack.
+tag_demand = TagDemandStore()
+try:
+    _TAX = TaxonomyParser()
+    _VALID_TAGS = set(_TAX.leaf_names)
+except Exception:
+    _TAX = None
+    _VALID_TAGS = set()
 
 class TrainingStartRequest(BaseModel):
     min_clients: Optional[int] = None
@@ -182,15 +196,20 @@ async def submit_update(req: ClientUpdateRequest):
         raise HTTPException(status_code=403, detail="Client must register before submitting updates")
     if req.num_samples <= 0:
         raise HTTPException(status_code=400, detail="num_samples must be positive")
-    if not rate_limiter.check(req.client_id):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded: max 1 update per 5 seconds")
+    if not rate_limiter.check(req.client_id, req.round):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded: too many updates for the same round")
 
     try:
         weights = model_manager.deserialize_weights(req.weights)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Weight decode failed: {str(e)}")
 
-    update_norm = float(sum(np.linalg.norm(w) for w in weights))
+    # Anomaly detection must run on the DELTA (submitted - current global), not
+    # on the full weight vector. The full-vector norm is dominated by the
+    # near-invariant global head and has ~zero variance across rounds, which made
+    # the 3-sigma gate reject every legitimate update after the first two rounds.
+    delta = [w - g for w, g in zip(weights, model_manager.global_weights)]
+    update_norm = float(sum(np.linalg.norm(d) for d in delta))
     is_valid, reason = validate_update(req.client_id, weights, model_manager.global_weights, update_norm, historical_norms)
     if not is_valid:
         trust_scorer.update_score(req.client_id, False, reason)
@@ -289,6 +308,73 @@ async def start_training(req: Optional[TrainingStartRequest] = None):
     asyncio.create_task(coordinator.start_training())
     return {"status": "started"}
 
+@app.get("/api/taxonomy")
+async def get_taxonomy():
+    """Live taxonomy (categories + leaf tags) so the dashboard and clients can
+    render the tag system from the server's source of truth rather than a
+    hardcoded UI list."""
+    tax_path = "taxonomy.json"
+    if not os.path.exists(tax_path):
+        return {"categories": []}
+    try:
+        with open(tax_path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {"categories": []}
+
+
+class TagSignalRequest(BaseModel):
+    client_id: Optional[str] = None
+    tags: List[str] = []
+
+
+@app.post("/api/taxonomy/signal", dependencies=[Depends(verify_token)])
+async def post_tag_signal(req: TagSignalRequest):
+    """Clients report the tags they actually use (applied while organizing, or
+    predicted with high confidence). The server accumulates a recency-weighted
+    demand signal that drives the dashboard's Trending Tags view and can later
+    bias taxonomy ordering. Unknown tags are ignored; this is additive and does
+    not touch the FL training loop."""
+    incoming = req.tags or []
+    if _VALID_TAGS:
+        accepted = [t for t in incoming if t in _VALID_TAGS]
+    else:
+        accepted = [t for t in incoming if isinstance(t, str) and t]
+    recorded = tag_demand.record(accepted)
+    return {"ok": True, "received": len(incoming), "recorded": recorded, "client_id": req.client_id}
+
+
+@app.get("/api/taxonomy/demand")
+async def get_tag_demand():
+    """Recency-weighted demand over the taxonomy: which tags are hot right now."""
+    return tag_demand.snapshot()
+
+
+@app.get("/api/config")
+async def get_runtime_config():
+    """Read-only view of the coordinator's active training / privacy knobs.
+    Surfaced by the dashboard so operators can see the live aggregation and
+    differential-privacy configuration."""
+    num_classes = None
+    try:
+        num_classes = len(TaxonomyParser().leaf_names)
+    except Exception:
+        num_classes = None
+    return {
+        "min_clients": config.min_clients,
+        "max_rounds": config.max_rounds,
+        "local_epochs": config.local_epochs,
+        "learning_rate": config.learning_rate,
+        "mu": config.mu,
+        "trim_pct": config.trim_pct,
+        "aggregation": "trimmed_mean",
+        "dp_epsilon": config.dp_epsilon,
+        "dp_delta": config.dp_delta,
+        "max_grad_norm": config.max_grad_norm,
+        "num_classes": num_classes,
+    }
+
+
 @app.get("/api/metrics/comparison")
 async def get_comparison():
     categories = []
@@ -327,11 +413,18 @@ async def get_comparison():
 
     baseline = compute_scores("output/bootstrap_eval_report.json")
     federated = compute_scores("output/latest_eval.json")
-    
+
+    evaluated = os.path.exists("output/bootstrap_eval_report.json") and os.path.exists("output/latest_eval.json")
+
     return {
         "categories": categories,
         "baseline": baseline,
-        "federated": federated
+        "federated": federated,
+        # Honest signal for the dashboard: until a server-side evaluation has
+        # actually run (prep_model.py evaluate), these numbers are not real
+        # model-quality measurements, so the UI should show an "awaiting
+        # evaluation" state rather than implying 0% accuracy.
+        "evaluated": evaluated
     }
 
 @app.post("/api/training/stop")

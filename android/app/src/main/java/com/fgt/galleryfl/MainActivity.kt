@@ -120,6 +120,15 @@ fun MainScreen(
     var smartAlbums by remember { mutableStateOf<List<GalleryAlbum>>(emptyList()) }
     var isScanning by remember { mutableStateOf(false) }
 
+    // Organize / Undo state
+    var isOrganizing by remember { mutableStateOf(false) }
+    var canUndoOrganize by remember { mutableStateOf(false) }
+
+    // Remembered coordinator access code for smoother reconnect.
+    val savedCode = remember {
+        context.getSharedPreferences("fgt_prefs", Context.MODE_PRIVATE).getString("last_access_code", "") ?: ""
+    }
+
     val filteredPhotos by remember {
         derivedStateOf {
             if (searchQuery.isBlank()) {
@@ -168,6 +177,13 @@ fun MainScreen(
         }
     }
 
+    // Restore "can undo" state from the operation log on launch.
+    LaunchedEffect(Unit) {
+        try {
+            canUndoOrganize = AppDatabase.getDatabase(context).operationLogDao().getLatestLog() != null
+        } catch (_: Exception) { /* DB not ready yet */ }
+    }
+
     // FL WebSocket Listeners
     DisposableEffect(Unit) {
         wsClient.onConnectionChanged = { connected, reason ->
@@ -180,7 +196,7 @@ fun MainScreen(
                 }
             }
         }
-        wsClient.onUpdateRequested = { round, lr, epochs, mu ->
+        wsClient.onUpdateRequested = { round, lr, epochs, mu, dpEpsilon, dpDelta, maxGradNorm ->
             currentRound = round
             isTraining = true
             statusText = "Syncing knowledge (Round $round)..."
@@ -236,8 +252,15 @@ fun MainScreen(
                         targetsList.add(labels)
                     }
 
+                    // Per-example DP-SGD (server-calibrated epsilon/delta/C).
+                    // dpEpsilon <= 0 means the server disabled DP for this session.
                     val trainer = LocalTrainer(ClassificationHead(numClasses), mu = mu)
-                    val result = trainer.train(featuresList, targetsList, globalWeights, epochs = epochs, lr = lr)
+                    val result = trainer.train(
+                        featuresList, targetsList, globalWeights,
+                        epochs = epochs, lr = lr,
+                        dpEpsilon = dpEpsilon, dpDelta = dpDelta,
+                        maxGradNorm = maxGradNorm, numSamples = featuresList.size
+                    )
 
                     apiService.submitUpdate(accessCode, ClientUpdateRequest(
                         client_id = registeredClientId ?: error("Client is not registered"),
@@ -386,7 +409,60 @@ fun MainScreen(
                             onAlbumClick = { album ->
                                 searchQuery = album.tagName
                                 selectedTab = 0
-                            }
+                            },
+                            onOrganizeClick = {
+                                scope.launch(Dispatchers.IO) {
+                                    try {
+                                        if (activeWeights == null) {
+                                            withContext(Dispatchers.Main) {
+                                                statusText = "Connect to sync model first"
+                                                showFLDialog = true
+                                            }
+                                            return@launch
+                                        }
+                                        isOrganizing = true
+                                        val feedbackStore = LocalFeedbackStore(context)
+                                        val executor = OrganizeExecutor(
+                                            context, featureExtractor, feedbackStore,
+                                            AlbumCreator(context), ExifTagWriter(context),
+                                            AppDatabase.getDatabase(context)
+                                        )
+                                        val outcome = executor.organize(activeWeights!!)
+                                        withContext(Dispatchers.Main) {
+                                            canUndoOrganize = true
+                                            isOrganizing = false
+                                            statusText = "Organized ${outcome.folders.size} albums, " +
+                                                    "${outcome.totalCopied} photos into Pictures/FGT/"
+                                        }
+                                    } catch (e: Exception) {
+                                        withContext(Dispatchers.Main) {
+                                            isOrganizing = false
+                                            statusText = "Organize failed: ${e.message}"
+                                        }
+                                    }
+                                }
+                            },
+                            onUndoClick = {
+                                scope.launch(Dispatchers.IO) {
+                                    try {
+                                        val feedbackStore = LocalFeedbackStore(context)
+                                        val executor = OrganizeExecutor(
+                                            context, featureExtractor, feedbackStore,
+                                            AlbumCreator(context), ExifTagWriter(context),
+                                            AppDatabase.getDatabase(context)
+                                        )
+                                        val done = executor.undoLast()
+                                        withContext(Dispatchers.Main) {
+                                            canUndoOrganize = executor.hasUndoable()
+                                            statusText = if (done) "Undid last organization" else "Nothing to undo"
+                                        }
+                                    } catch (e: Exception) {
+                                        withContext(Dispatchers.Main) { statusText = "Undo failed: ${e.message}" }
+                                    }
+                                }
+                            },
+                            canUndo = canUndoOrganize,
+                            modelReady = activeWeights != null
                         )
                         2 -> LibraryScreen(smartAlbums)
                     }
@@ -398,6 +474,8 @@ fun MainScreen(
         ImageDetailScreen(
             image = image,
             onBack = { selectedImage = null },
+            featureExtractor = featureExtractor,
+            activeWeights = activeWeights,
             onDelete = { img ->
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                     val pendingIntent = android.provider.MediaStore.createDeleteRequest(
@@ -423,8 +501,11 @@ fun MainScreen(
             statusText = statusText,
             isConnected = isConnected,
             isTraining = isTraining,
+            initialCode = savedCode,
             onDismiss = { showFLDialog = false },
             onConnect = { code ->
+                context.getSharedPreferences("fgt_prefs", Context.MODE_PRIVATE)
+                    .edit().putString("last_access_code", code).apply()
                 scope.launch(Dispatchers.IO) {
                     try {
                         val connection = parseConnectionDetails(code, defaultServerUrl)
@@ -433,6 +514,7 @@ fun MainScreen(
 
                         val apiService = RetrofitClient.getApiService(currentServerUrl, httpClient)
                         val reg = apiService.register(accessCode, RegisterRequest(Build.MODEL, "User-${clientId.take(4)}", clientId))
+                        TagSignalSender.configure(apiService, accessCode, reg.client_id)
                         
                         val response = apiService.getCurrentModel(0)
                         val serverVersion = response.headers()["X-Model-Version"]?.toIntOrNull() ?: reg.model_version
@@ -563,11 +645,25 @@ fun FLSyncDialog(
     statusText: String,
     isConnected: Boolean,
     isTraining: Boolean,
+    initialCode: String = "",
     onDismiss: () -> Unit,
     onConnect: (String) -> Unit,
     onDisconnect: () -> Unit
 ) {
-    var codeInput by remember { mutableStateOf("") }
+    var codeInput by remember { mutableStateOf(initialCode) }
+    var codeError by remember { mutableStateOf<String?>(null) }
+
+    fun tryConnect() {
+        val code = codeInput.trim()
+        val parts = code.split("@")
+        if (code.isBlank() || parts.size != 2 || parts[0].isBlank() || parts[1].isBlank()) {
+            codeError = "Use the format IP:PORT@ACCESS_CODE"
+            return
+        }
+        codeError = null
+        onConnect(code)
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Row(verticalAlignment = Alignment.CenterVertically) {
@@ -577,7 +673,10 @@ fun FLSyncDialog(
         }},
         text = {
             Column {
-                Text(statusText, style = MaterialTheme.typography.bodyMedium, color = FGTColors.TextSecondary)
+                Text(
+                    if (isConnected) statusText else "Enter your coordinator access code to sync the model. Your photos never leave this device.",
+                    style = MaterialTheme.typography.bodyMedium, color = FGTColors.TextSecondary
+                )
                 if (isTraining) {
                     Spacer(Modifier.height(12.dp))
                     LinearProgressIndicator(Modifier.fillMaxWidth(), color = FGTColors.AccentPrimary)
@@ -586,16 +685,20 @@ fun FLSyncDialog(
                     Spacer(Modifier.height(16.dp))
                     OutlinedTextField(
                         value = codeInput,
-                        onValueChange = { codeInput = it },
-                        label = { Text("FGT Access Code") },
-                        placeholder = { Text("IP:PORT@TOKEN") }
+                        onValueChange = { codeInput = it; codeError = null },
+                        label = { Text("Coordinator Access Code") },
+                        placeholder = { Text("IP:PORT@ACCESS_CODE") },
+                        isError = codeError != null,
+                        supportingText = codeError?.let { { Text(it, color = FGTColors.Error) } },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
             }
         },
         confirmButton = {
             if (!isConnected) {
-                Button(onClick = { onConnect(codeInput) }) { Text("Sync Now") }
+                Button(onClick = { tryConnect() }) { Text("Sync Now") }
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = onDisconnect, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Disconnect") }

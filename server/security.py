@@ -50,23 +50,50 @@ def validate_update(
         if not np.isfinite(w).all():
             return False, f"Layer {i} contains NaN or Inf"
 
+    # Anomaly gate on the DELTA norm (submitted - current global). Legitimate
+    # FL deltas can be tiny (~1e-3) or clipped to ~1.0 depending on client
+    # strategy, so a fixed absolute floor is fragile. We combine:
+    #   - reject an essentially-zero delta (client sent unchanged weights),
+    #   - reject egregious deltas with an absolute upper bound (poisoning),
+    #   - apply the 3-sigma test ONLY when historical variance is meaningful.
+    # The previous 3-sigma-only check collapsed to "reject everything" whenever
+    # historical norms were near-identical (std ~ 0), which wrongly dropped
+    # every legitimate small update after the first rounds.
+    if update_norm < 1e-9:
+        return False, "Delta norm ~0 (client submitted unchanged weights)"
+
     if len(historical_norms) > 5:
-        mean_norm = np.mean(historical_norms[-50:])
-        std_norm = np.std(historical_norms[-50:])
-        if std_norm > 0 and update_norm > mean_norm + (3 * std_norm):
-            return False, f"Norm {update_norm:.2f} exceeds 3-sigma ({mean_norm:.2f} + 3*{std_norm:.2f})"
+        mean_norm = float(np.mean(historical_norms[-50:]))
+        std_norm = float(np.std(historical_norms[-50:]))
+        if std_norm > 1e-6 and update_norm > mean_norm + 3 * std_norm:
+            return False, f"Norm {update_norm:.4f} exceeds 3-sigma ({mean_norm:.4f} + 3*{std_norm:.4f})"
+
+    if update_norm > 100.0:
+        return False, f"Delta norm {update_norm:.4f} exceeds absolute bound 100.0"
 
     return True, ""
 
 class RateLimiter:
-    def __init__(self, window_seconds: float = 5.0):
-        self.window = window_seconds
-        self.last_update: Dict[str, float] = {}
+    """Anti-flood guard keyed by (client_id, round).
 
-    def check(self, client_id: str) -> bool:
+    A legitimate FL client submits exactly one update per round. The
+    coordinator already rejects duplicate/stale submissions for the current
+    round, so the only thing this limiter needs to prevent is a client
+    replaying the *same* round many times in quick succession. It must NOT
+    block a client from submitting across successive rounds, even if rounds
+    complete faster than a fixed wall-clock window (e.g. fast automated or
+    on-device clients). Keying on (client, round) achieves that.
+    """
+
+    def __init__(self, window_seconds: float = 2.0):
+        self.window = window_seconds
+        self.last_update: Dict[tuple, float] = {}
+
+    def check(self, client_id: str, round_no: int) -> bool:
+        key = (client_id, round_no)
         now = time.time()
-        last = self.last_update.get(client_id, 0.0)
+        last = self.last_update.get(key, 0.0)
         if now - last < self.window:
             return False
-        self.last_update[client_id] = now
+        self.last_update[key] = now
         return True

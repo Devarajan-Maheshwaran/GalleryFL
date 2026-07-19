@@ -8,6 +8,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -18,17 +20,66 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.fgt.galleryfl.data.local.GalleryImage
+import com.fgt.galleryfl.data.local.GalleryRepository
+import com.fgt.galleryfl.data.ml.ClassificationHead
+import com.fgt.galleryfl.data.ml.FeatureExtractor
+import com.fgt.galleryfl.data.ml.HeatmapGenerator
+import com.fgt.galleryfl.data.network.TagSignalSender
+import com.fgt.galleryfl.data.taxonomy.TaxonomyConfig
 import com.fgt.galleryfl.ui.theme.FGTColors
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ImageDetailScreen(
     image: GalleryImage,
     onBack: () -> Unit,
-    onDelete: (GalleryImage) -> Unit
+    onDelete: (GalleryImage) -> Unit,
+    featureExtractor: FeatureExtractor,
+    activeWeights: List<FloatArray>?
 ) {
     val context = LocalContext.current
     var showInfo by remember { mutableStateOf(false) }
+    var showHeatmap by remember { mutableStateOf(false) }
+    var heatmap by remember { mutableStateOf<Array<FloatArray>?>(null) }
+    var predictedTag by remember { mutableStateOf<String?>(null) }
+
+    // Recompute the GradCAM-style heatmap when the toggle flips or the image
+    // changes. Reset when hidden so a stale overlay is never shown.
+    LaunchedEffect(showHeatmap, image.id) {
+        if (!showHeatmap) {
+            heatmap = null
+            predictedTag = null
+            return@LaunchedEffect
+        }
+        if (activeWeights == null) return@LaunchedEffect
+        withContext(Dispatchers.IO) {
+            try {
+                val repo = GalleryRepository(context)
+                val bmp = repo.loadBitmap(image.uri) ?: return@withContext
+                val features = featureExtractor.extractFeatures(bmp)
+                val numClasses = activeWeights[2].size / 256
+                val head = ClassificationHead(numClasses)
+                head.setWeightsFlat(activeWeights)
+                val preds = head.forward(features.projection)
+                val topClass = preds.indices.maxByOrNull { preds[it] } ?: -1
+                val hm = HeatmapGenerator(head).generateHeatmap(features.spatialMap, topClass)
+                val predictedName = if (topClass >= 0) {
+                    TaxonomyConfig.leafTags.getOrNull(topClass)?.name
+                } else null
+                withContext(Dispatchers.Main) {
+                    heatmap = hm
+                    predictedTag = predictedName
+                    // Report this high-confidence predicted tag as a demand signal
+                    // so the server's Trending Tags view reflects what users see.
+                    predictedName?.let { TagSignalSender.emit(listOf(it)) }
+                }
+            } catch (_: Exception) {
+                // Heatmap is best-effort; ignore failures.
+            }
+        }
+    }
 
     Scaffold(
         containerColor = Color.Black,
@@ -47,6 +98,16 @@ fun ImageDetailScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = {
+                        if (activeWeights != null) showHeatmap = !showHeatmap
+                        else showInfo = true
+                    }) {
+                        Icon(
+                            imageVector = if (showHeatmap) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                            contentDescription = "Toggle heatmap",
+                            tint = if (showHeatmap) FGTColors.AccentPrimary else Color.White
+                        )
+                    }
                     IconButton(onClick = {
                         val shareIntent = Intent(Intent.ACTION_SEND).apply {
                             type = "image/*"
@@ -79,7 +140,47 @@ fun ImageDetailScreen(
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Fit
             )
-            
+
+            // Approximate GradCAM overlay: a 7x7 grid coloured by the
+            // HeatmapGenerator scores for the predicted class. The model's
+            // spatial map is 7x7, so this is a faithful coarse localization.
+            if (showHeatmap && heatmap != null) {
+                Box(Modifier.matchParentSize()) {
+                    Column(Modifier.fillMaxSize()) {
+                        for (y in 0..6) {
+                            Row(Modifier.weight(1f).fillMaxWidth()) {
+                                for (x in 0..6) {
+                                    val v = (heatmap!![y][x] * 0.75f).coerceIn(0f, 0.85f)
+                                    Box(
+                                        Modifier
+                                            .weight(1f)
+                                            .fillMaxSize()
+                                            .background(Color(1f, 0.2f, 0f, v))
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (showHeatmap && predictedTag != null) {
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 8.dp),
+                    color = FGTColors.AccentPrimary.copy(alpha = 0.9f),
+                    contentColor = Color.White,
+                    shape = MaterialTheme.shapes.small
+                ) {
+                    Text(
+                        "Predicted: $predictedTag",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                }
+            }
+
             if (showInfo) {
                 Surface(
                     modifier = Modifier

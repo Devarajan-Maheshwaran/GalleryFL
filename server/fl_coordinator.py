@@ -98,6 +98,9 @@ class FLCoordinator:
                 "local_epochs": self.config.local_epochs,
                 "lr": self.config.learning_rate,
                 "mu": self.config.mu,
+                "dp_epsilon": self.config.dp_epsilon,
+                "dp_delta": self.config.dp_delta,
+                "max_grad_norm": self.config.max_grad_norm,
             }},
         }, client_id)
 
@@ -165,7 +168,13 @@ class FLCoordinator:
             self.metrics_store.log_round(metrics)
             await ws_manager.broadcast({"type": "round_completed", "data": metrics.model_dump()})
 
-            if self.current_round >= self.config.max_rounds or converged:
+            # NOTE: we deliberately do NOT early-stop on `converged` here. The
+            # absolute convergence_threshold (0.001) is far too tight for FL
+            # with DP/local reporting noise — client-reported mean loss is often
+            # stable to <0.001 round-to-round, which falsely triggered a stop
+            # after 2 rounds. Let the session run to max_rounds; the dashboard
+            # shows the full curve and the user can stop manually.
+            if self.current_round >= self.config.max_rounds:
                 elapsed = time.time() - self.session_start_time
                 reason = "converged" if converged else "max_rounds_reached"
                 logging.info(f"Training complete after {self.current_round} rounds ({elapsed:.0f}s) - {reason}")
@@ -219,8 +228,13 @@ class FLCoordinator:
     async def _run_evaluation(self):
         try:
             import subprocess
-            logging.info("Starting background model evaluation on server...")
-            subprocess.Popen(["python", "prep_model.py", "evaluate"])
+            import sys
+            logging.info("Starting TF-free server-side evaluation (prep_eval.py)...")
+            # prep_eval.py mirrors the Android head forward pass in pure numpy
+            # (no TensorFlow needed) and writes output/latest_eval.json +
+            # output/bootstrap_eval_report.json so the comparison endpoint is
+            # populated with real per-class F1 after every round.
+            subprocess.Popen([sys.executable, "prep_eval.py"])
         except Exception as e:
             logging.error(f"Evaluation failed: {e}")
 

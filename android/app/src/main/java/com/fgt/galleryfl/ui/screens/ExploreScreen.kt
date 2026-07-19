@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Undo
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -32,7 +33,11 @@ fun ExploreScreen(
     smartAlbums: List<GalleryAlbum>,
     isScanning: Boolean,
     onScanClick: () -> Unit,
-    onAlbumClick: (GalleryAlbum) -> Unit
+    onAlbumClick: (GalleryAlbum) -> Unit,
+    onOrganizeClick: () -> Unit = {},
+    onUndoClick: () -> Unit = {},
+    canUndo: Boolean = false,
+    modelReady: Boolean = true
 ) {
     Column(modifier = Modifier.fillMaxSize().background(FGTColors.BgBase)) {
         Text(
@@ -42,6 +47,26 @@ fun ExploreScreen(
             color = FGTColors.TextPrimary,
             modifier = Modifier.padding(start = 16.dp, top = 24.dp, bottom = 8.dp)
         )
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Button(onClick = onOrganizeClick, enabled = modelReady && !isScanning) {
+                Icon(Icons.Outlined.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Organize")
+            }
+            if (canUndo) {
+                OutlinedButton(onClick = onUndoClick, enabled = !isScanning) {
+                    Icon(Icons.Outlined.Undo, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Undo")
+                }
+            }
+        }
 
         val categories = smartAlbums.groupBy { it.folderPath.substringBefore("/") }
         
