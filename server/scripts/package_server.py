@@ -14,18 +14,24 @@ def package_server():
         "dashboard",
         "models",
         "output",
+        "config.json",
         "config.py",
         "fl_coordinator.py",
         "main.py",
         "metrics.py",
         "model_manager.py",
+        "prep_eval.py",
         "prep_model.py",
         "requirements.txt",
         "run_server.bat",
+        "run_server.py",
         "run_server.sh",
+        "scripts",
         "security.py",
+        "tag_demand.py",
         "taxonomy.json",
         "taxonomy_parser.py",
+        "verify_fl_loop.py",
         "ws_manager.py",
         "README-server.md"
     ]
@@ -44,6 +50,9 @@ def package_server():
                 for file_path in item_path.rglob("*"):
                     # Exclude pycache and pytest_cache
                     if "__pycache__" in file_path.parts or ".pytest_cache" in file_path.parts:
+                        continue
+                    # Exclude large regenerable eval artifacts and live logs.
+                    if file_path.name in ("fl_probe.npz", "audit.log"):
                         continue
                     print(f"Adding file: {file_path.relative_to(server_dir)}")
                     zf.write(file_path, arcname=file_path.relative_to(server_dir))
