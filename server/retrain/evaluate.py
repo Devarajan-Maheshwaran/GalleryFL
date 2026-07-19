@@ -24,7 +24,10 @@ def forward(X, w1, b1, w2, b2):
     z1 = X @ w1 + b1
     a1 = np.maximum(0.0, z1)
     z2 = a1 @ w2 + b2
-    return 1.0 / (1.0 + np.exp(-np.clip(z2, -50, 50)))   # still sigmoid-style for compatibility, but we use argmax
+    # Proper softmax for 7-class single-label head (not sigmoid)
+    z2 = z2 - np.max(z2, axis=1, keepdims=True)
+    exp_z = np.exp(z2)
+    return exp_z / np.sum(exp_z, axis=1, keepdims=True)
 
 def load_test_data(manifest_path):
     items = []
@@ -96,6 +99,14 @@ def main():
     if args.tune_thresholds:
         thresholds = tune_thresholds(probs, labels)
         print("Tuned thresholds (using argmax primarily):", dict(zip(LABELS, np.round(thresholds, 3))))
+    else:
+        thresholds = np.full(NUM_CLASSES, 0.5)
+
+    # Always save thresholds.json for export (even defaults)
+    os.makedirs(os.path.dirname(METRICS_PATH), exist_ok=True)
+    thresh_dict = dict(zip(LABELS, [float(t) for t in thresholds]))
+    with open(os.path.join(os.path.dirname(METRICS_PATH), "thresholds.json"), "w") as f:
+        json.dump(thresh_dict, f, indent=2)
 
     report = compute_metrics(labels, probs)
 
@@ -105,7 +116,6 @@ def main():
     for name, m in report["per_class"].items():
         print(f"  {name:12s} F1={m['f1']:.4f}  P={m['precision']:.4f}  R={m['recall']:.4f}  support={m['support']}")
 
-    os.makedirs(os.path.dirname(METRICS_PATH), exist_ok=True)
     with open(METRICS_PATH, "w") as f:
         json.dump(report, f, indent=2)
     print(f"\nReport saved to {METRICS_PATH}")

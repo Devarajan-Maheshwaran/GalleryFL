@@ -127,18 +127,17 @@ def main():
     with open(os.path.join(RETRAIN_DIR, "feature_norm.json"), "w") as f:
         json.dump({"mean": mean[0].tolist(), "std": std[0].tolist()}, f)
 
-    print("\n[3/4] Building head (softmax + label smoothing)...")
+    print("\n[3/4] Building head (softmax + class weights)...")
 
     inp_layer = tf.keras.Input(shape=(FEATURE_DIM,))
     x = tf.keras.layers.Dense(256, activation="relu", kernel_initializer="he_normal")(inp_layer)
     x = tf.keras.layers.Dropout(0.4)(x)
-    x = tf.keras.layers.BatchNormalization()(x)
     out_layer = tf.keras.layers.Dense(NUM_CLASSES, activation="softmax")(x)
     model = tf.keras.Model(inp_layer, out_layer)
 
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=cfg.lr, weight_decay=1e-4),
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(label_smoothing=0.1),
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(),
         metrics=["accuracy"]
     )
 
@@ -179,9 +178,10 @@ def main():
     print(f"\nBest macro F1 on validation: {best_f1:.4f}")
     model.set_weights(best_weights)
 
-    # Save in GalleryFL format
-    w1, b1 = model.layers[1].get_weights()
-    w2, b2 = model.layers[-1].get_weights()
+    # Save in GalleryFL format (robust layer extraction)
+    dense_layers = [layer for layer in model.layers if isinstance(layer, tf.keras.layers.Dense)]
+    w1, b1 = dense_layers[0].get_weights()
+    w2, b2 = dense_layers[1].get_weights()
 
     np.savez(BEST_CHECKPOINT, w1=w1.astype(np.float32), b1=b1.astype(np.float32),
              w2=w2.astype(np.float32), b2=b2.astype(np.float32))

@@ -49,10 +49,14 @@ def main():
         f.write(str(version))
     print(f"Bumped model version to {version}")
 
-    # Copy thresholds if they exist
-    if os.path.exists(os.path.join(RETRAIN_DIR, "thresholds.json")):
+    # Copy thresholds if they exist (safe against same-file)
+    src_thresh = os.path.join(RETRAIN_DIR, "thresholds.json")
+    if os.path.exists(src_thresh):
         import shutil
-        shutil.copy(os.path.join(RETRAIN_DIR, "thresholds.json"), THRESHOLDS_PATH)
+        if os.path.abspath(src_thresh) != os.path.abspath(THRESHOLDS_PATH):
+            shutil.copy(src_thresh, THRESHOLDS_PATH)
+        else:
+            print("thresholds.json is already in the target location (no copy needed)")
 
     print("\nExport complete. Ready for Android + Server FL.")
     print(f"Head: {HEAD_WEIGHTS_PATH}")

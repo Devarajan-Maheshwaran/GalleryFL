@@ -82,6 +82,23 @@ class ModelManager:
 
         try:
             data = np.load(target_snapshot, allow_pickle=True)
+
+            # === Dynamic support for 7-parent retrain (GalleryFL parents) ===
+            # Allows verification to succeed with num_classes=7 even if taxonomy is 34-leaf
+            global NUM_CLASSES, LAYER_SCHEMA
+            loaded_nc = NUM_CLASSES
+            if "w2" in data:
+                loaded_nc = int(data["w2"].shape[1])
+            if loaded_nc != NUM_CLASSES:
+                NUM_CLASSES = loaded_nc
+                LAYER_SCHEMA = [
+                    ("w1", (1024, 256)),
+                    ("b1", (256,)),
+                    ("w2", (256, NUM_CLASSES)),
+                    ("b2", (NUM_CLASSES,)),
+                ]
+                logging.warning(f"Dynamic num_classes={NUM_CLASSES} loaded from head (7-parent retrain mode)")
+
             self.global_weights = []
             
             for name, expected_shape in LAYER_SCHEMA:
