@@ -3,31 +3,23 @@
     android:height="48dp"
     android:viewportWidth="48"
     android:viewportHeight="48">
-    <!-- Monochrome aperture / camera-iris mark. Drawn in pure black so it can
-         be re-tinted at call sites (e.g. ColorFilter.tint) without changing
-         the source vector. -->
-    <group
+    <!-- Monochrome aperture / camera-iris mark. -->
+    <path
+        android:pathData="M30,24 L39.588,33 M27,29.196 L24,42 M21,29.196 L8.412,33 M18,24 L8.412,15 M21,18.804 L24,6 M27,18.804 L39.588,15"
         android:strokeWidth="2.4"
         android:strokeColor="#000000"
-        android:strokeLinecap="round"
-        android:fillColor="#00000000">
-        <path android:pathData="M30,24 L39.588,33" />
-        <path android:pathData="M27,29.196 L24,42" />
-        <path android:pathData="M21,29.196 L8.412,33" />
-        <path android:pathData="M18,24 L8.412,15" />
-        <path android:pathData="M21,18.804 L24,6" />
-        <path android:pathData="M27,18.804 L39.588,15" />
-    </group>
-    <circle
-        android:cx="24"
-        android:cy="24"
-        android:r="19"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+
+    <!-- Outer circle (r=19) -->
+    <path
+        android:pathData="M24,5 A19,19 0 1,1 23.99,5 Z"
         android:fillColor="#00000000"
         android:strokeColor="#000000"
         android:strokeWidth="2.4" />
-    <circle
-        android:cx="24"
-        android:cy="24"
-        android:r="3"
+
+    <!-- Inner circle (r=3) -->
+    <path
+        android:pathData="M24,21 A3,3 0 1,1 23.99,21 Z"
         android:fillColor="#000000" />
 </vector>

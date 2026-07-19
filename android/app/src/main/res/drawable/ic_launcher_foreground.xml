@@ -3,30 +3,23 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Same aperture mark, rendered white for the launcher foreground so it
-         reads on the near-black adaptive background. -->
-    <group
+    <!-- Same aperture mark, rendered white for the launcher foreground. -->
+    <path
+        android:pathData="M67.5,54 L85.073,74.25 M60.75,66.191 L54,94.5 M47.25,66.191 L18.927,74.25 M40.5,54 L18.927,33.75 M47.25,41.809 L54,13.5 M60.75,41.809 L85.073,33.75"
         android:strokeWidth="5.2"
         android:strokeColor="#FFFFFF"
-        android:strokeLinecap="round"
-        android:fillColor="#00000000">
-        <path android:pathData="M67.5,54 L85.073,74.25" />
-        <path android:pathData="M60.75,66.191 L54,94.5" />
-        <path android:pathData="M47.25,66.191 L18.927,74.25" />
-        <path android:pathData="M40.5,54 L18.927,33.75" />
-        <path android:pathData="M47.25,41.809 L54,13.5" />
-        <path android:pathData="M60.75,41.809 L85.073,33.75" />
-    </group>
-    <circle
-        android:cx="54"
-        android:cy="54"
-        android:r="43"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+
+    <!-- Outer circle (r=43) -->
+    <path
+        android:pathData="M54,11 A43,43 0 1,1 53.99,11 Z"
         android:fillColor="#00000000"
         android:strokeColor="#FFFFFF"
         android:strokeWidth="5.2" />
-    <circle
-        android:cx="54"
-        android:cy="54"
-        android:r="7"
+
+    <!-- Inner circle (r=7) -->
+    <path
+        android:pathData="M54,47 A7,7 0 1,1 53.99,47 Z"
         android:fillColor="#FFFFFF" />
 </vector>
