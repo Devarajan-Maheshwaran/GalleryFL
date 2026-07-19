@@ -5,7 +5,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
-import androidx.compose.material3.*
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -19,12 +21,22 @@ import com.fgt.galleryfl.data.local.GalleryImage
 import com.fgt.galleryfl.ui.theme.FGTColors
 import androidx.compose.foundation.shape.RoundedCornerShape
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PhotosScreen(
     photos: List<GalleryImage>,
     onImageClick: (GalleryImage) -> Unit
 ) {
+    var columns by remember { mutableStateOf(3) }
     val gridState = rememberLazyGridState()
+    val context = LocalContext.current
+    var peekImage by remember { mutableStateOf<GalleryImage?>(null) }
+    val sheetState = rememberModalBottomSheetState()
+
+    fun performHaptic(ctx: Context) {
+        val vibrator = ctx.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+        vibrator?.vibrate(VibrationEffect.createOneShot(18, VibrationEffect.DEFAULT_AMPLITUDE))
+    }
     
     // Calculate if we should show the collapsed small title
     val showSmallTitle by remember {
@@ -85,23 +97,61 @@ fun PhotosScreen(
             }
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Fixed(3),
+                columns = GridCells.Fixed(columns),
                 state = gridState,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTransformGestures { _, _, zoom, _ ->
+                            columns = (columns * zoom).toInt().coerceIn(3, 6)
+                        }
+                    },
                 contentPadding = PaddingValues(1.dp),
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                items(photos, key = { it.id }) { photo ->
+                items(
+                    photos,
+                    key = { it.id },
+                    span = { index ->
+                        val isHighlight = (index + 1) % 12 == 0
+                        GridItemSpan(if (isHighlight) minOf(2, columns) else 1)
+                    }
+                ) { photo ->
                     AsyncImage(
                         model = photo.uri,
                         contentDescription = null,
                         modifier = Modifier
                             .aspectRatio(1f)
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { onImageClick(photo) },
+                            .clip(RoundedCornerShape(12.dp))
+                            .pointerInput(Unit) {
+                                detectTapGestures(
+                                    onTap = { onImageClick(photo) },
+                                    onLongPress = { peekImage = photo; performHaptic(context) }
+                                )
+                            },
                         contentScale = ContentScale.Crop
                     )
+                }
+            }
+        }
+
+        peekImage?.let { img ->
+            ModalBottomSheet(onDismissRequest = { peekImage = null }, sheetState = sheetState) {
+                Column(Modifier.padding(16.dp)) {
+                    Text(img.displayName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = FGTColors.TextPrimary)
+                    Spacer(Modifier.height(12.dp))
+                    Row(Modifier.fillMaxWidth().clickable {
+                        val si = Intent(Intent.ACTION_SEND).apply {
+                            type = "image/*"; putExtra(Intent.EXTRA_STREAM, img.uri); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        context.startActivity(Intent.createChooser(si, "Share"))
+                        peekImage = null
+                    }.padding(vertical = 14.dp)) { Text("Share", style = MaterialTheme.typography.bodyLarge, color = FGTColors.TextPrimary) }
+                    Row(Modifier.fillMaxWidth().clickable { peekImage = null }.padding(vertical = 14.dp)) { Text("Add to Album", style = MaterialTheme.typography.bodyLarge) }
+                    Row(Modifier.fillMaxWidth().clickable { peekImage = null }.padding(vertical = 14.dp)) { Text("Favorite", style = MaterialTheme.typography.bodyLarge) }
+                    Row(Modifier.fillMaxWidth().clickable { peekImage = null }.padding(vertical = 14.dp)) { Text("Smart Tags", style = MaterialTheme.typography.bodyLarge) }
+                    Row(Modifier.fillMaxWidth().clickable { peekImage = null }.padding(vertical = 14.dp)) { Text("Delete", style = MaterialTheme.typography.bodyLarge, color = FGTColors.Error) }
                 }
             }
         }

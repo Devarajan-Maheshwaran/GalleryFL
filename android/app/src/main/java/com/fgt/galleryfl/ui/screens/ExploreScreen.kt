@@ -14,9 +14,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Undo
 import androidx.compose.material3.*
+import androidx.compose.animation.core.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -47,6 +49,8 @@ fun ExploreScreen(
             color = FGTColors.TextPrimary,
             modifier = Modifier.padding(start = 16.dp, top = 24.dp, bottom = 8.dp)
         )
+
+        FederatedIntelligenceIndicator(isActive = isScanning || modelReady)
 
         Row(
             modifier = Modifier
@@ -129,6 +133,36 @@ fun ExploreScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun FederatedIntelligenceIndicator(isActive: Boolean) {
+    val transition = rememberInfiniteTransition(label = "intel")
+    val pulse by transition.animateFloat(
+        initialValue = 0.55f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1200), RepeatMode.Reverse),
+        label = "pulse"
+    )
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+    ) {
+        Icon(
+            Icons.Outlined.AutoAwesome,
+            contentDescription = null,
+            tint = if (isActive) FGTColors.AccentPrimary else FGTColors.TextSecondary,
+            modifier = Modifier.size(20.dp).alpha(if (isActive) pulse else 1f)
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            if (isActive) "Privacy-Engineered Sync Active" else "Local intelligence ready",
+            style = MaterialTheme.typography.labelMedium,
+            color = FGTColors.TextSecondary
+        )
     }
 }
 

@@ -10,26 +10,58 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
-private val DarkColorScheme = darkColorScheme(
-    primary = PrimaryColor,
-    secondary = AccentColor,
-    tertiary = NeutralColor
-)
+/**
+ * Liquid Glass edge-to-edge setup: the app draws underneath the status and
+ * navigation bars (translucent), and bar-icon color tracks the theme.
+ */
+fun enableEdgeToEdge(activity: Activity, darkTheme: Boolean) {
+    val window = activity.window
+    WindowCompat.setDecorFitsSystemWindows(window, false)
+    window.statusBarColor = Color.Transparent.toArgb()
+    window.navigationBarColor = Color.Transparent.toArgb()
+    val controller = WindowCompat.getInsetsController(window, window.decorView)
+    controller.isAppearanceLightStatusBars = !darkTheme
+    controller.isAppearanceLightNavigationBars = !darkTheme
+}
 
 private val LightColorScheme = lightColorScheme(
-    primary = PrimaryColor,
-    secondary = AccentColor,
-    tertiary = NeutralColor
+    primary = FGTColors.AccentPrimary,
+    secondary = FGTColors.AccentSecondary,
+    tertiary = FGTColors.AccentSecondary,
+    background = FGTColors.BgBase,
+    surface = FGTColors.BgSurface,
+    surfaceVariant = FGTColors.BgSurface2,
+    onPrimary = FGTColors.OnPrimary,
+    onBackground = FGTColors.TextPrimary,
+    onSurface = FGTColors.TextPrimary,
+    onSurfaceVariant = FGTColors.TextSecondary,
+    error = FGTColors.Error
+)
+
+private val DarkColorScheme = darkColorScheme(
+    primary = FGTColors.AccentPrimary,
+    secondary = FGTColors.AccentSecondary,
+    tertiary = FGTColors.AccentSecondary,
+    background = FGTColors.BgBaseDark,
+    surface = FGTColors.BgSurfaceDark,
+    surfaceVariant = FGTColors.BgSurfaceDark,
+    onPrimary = FGTColors.OnPrimary,
+    onBackground = FGTColors.TextPrimaryDark,
+    onSurface = FGTColors.TextPrimaryDark,
+    onSurfaceVariant = FGTColors.TextSecondaryDark,
+    error = FGTColors.Error
 )
 
 @Composable
 fun GalleryFLTheme(
-    darkTheme: Boolean = false,
+    darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
@@ -44,12 +76,10 @@ fun GalleryFLTheme(
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
-            val window = (view.context as Activity).window
-            window.statusBarColor = colorScheme.primary.toArgb()
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = darkTheme
+            val activity = view.context as? Activity
+            if (activity != null) enableEdgeToEdge(activity, darkTheme)
         }
     }
-
     MaterialTheme(
         colorScheme = colorScheme,
         typography = Typography,

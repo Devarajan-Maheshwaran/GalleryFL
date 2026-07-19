@@ -32,6 +32,7 @@ import com.fgt.galleryfl.data.local.*
 import com.fgt.galleryfl.data.ml.*
 import com.fgt.galleryfl.data.network.*
 import com.fgt.galleryfl.data.taxonomy.TaxonomyConfig
+import com.fgt.galleryfl.ui.components.*
 import com.fgt.galleryfl.ui.screens.*
 import com.fgt.galleryfl.ui.theme.*
 import kotlinx.coroutines.Dispatchers
@@ -465,6 +466,11 @@ fun MainScreen(
                             modelReady = activeWeights != null
                         )
                         2 -> LibraryScreen(smartAlbums)
+                        3 -> SearchScreen(
+                            photos = filteredPhotos,
+                            smartAlbums = smartAlbums,
+                            onImageClick = { selectedImage = it }
+                        )
                     }
                 }
             }
@@ -601,13 +607,13 @@ fun PhotosTopBar(
 
 @Composable
 fun PhotosBottomNav(selectedTab: Int, onTabSelected: (Int) -> Unit) {
-    Box(
+    GlassContainer(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 24.dp, vertical = 16.dp)
-            .height(64.dp)
-            .clip(RoundedCornerShape(32.dp))
-            .background(FGTColors.BgSurface.copy(alpha = 0.9f))
+            .height(64.dp),
+        cornerRadius = 32.dp,
+        backgroundColor = FGTColors.BgGlass.copy(alpha = 0.9f)
     ) {
         Row(
             modifier = Modifier.fillMaxSize(),
@@ -616,8 +622,9 @@ fun PhotosBottomNav(selectedTab: Int, onTabSelected: (Int) -> Unit) {
         ) {
             val items = listOf(
                 Icons.Default.Photo to "Photos",
-                Icons.Default.Search to "Explore",
-                Icons.Default.CollectionsBookmark to "Library"
+                Icons.Default.Favorite to "For You",
+                Icons.Default.CollectionsBookmark to "Albums",
+                Icons.Default.Search to "Search"
             )
             items.forEachIndexed { index, (icon, label) ->
                 val isSelected = selectedTab == index
