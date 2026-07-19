@@ -157,19 +157,20 @@ def main():
         sys.exit(1)
 
     # Extract features for eval (reuse train code logic)
-    from train import load_backbone, extract_feature
+    from train import load_backbone, extract_features
     interp, inp, proj = load_backbone()
 
     X, Y = [], []
-    for path, lbl in items:
-        if not os.path.exists(path): continue
-        try:
-            feat = extract_feature(interp, inp, proj, path)
+    paths = [p for p, _ in items]
+    try:
+        feats = extract_features(interp, inp, proj, paths, batch_size=32)
+        for feat, (_, lbl) in zip(feats, items):
             X.append(feat)
-            y = np.zeros(NUM_CLASSES, np.float32); y[lbl] = 1.0
+            y = np.zeros(NUM_CLASSES, np.float32)
+            y[lbl] = 1.0
             Y.append(y)
-        except Exception as e:
-            print(f"  [skip] {path}: {e}")
+    except Exception as e:
+        print(f"  [error extracting features]: {e}")
 
     X = np.array(X)
     Y = np.array(Y)

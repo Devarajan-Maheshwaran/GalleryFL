@@ -284,23 +284,39 @@ def main():
     with open(os.path.join(RETRAIN_OUTPUT_DIR, "feature_norm.json"), "w") as f:
         json.dump(norm_stats, f, indent=2)
 
-    # 4. Build small Keras head (stable)
-    print("\n[3/4] Building and training head...")
+    # 4. Build small Keras head (stable) - use SOFTMAX + categorical for single-label
+    print("\n[3/4] Building and training head (softmax + categorical)...")
 
     inputs = tf.keras.Input(shape=(FEATURE_DIM,))
     x = tf.keras.layers.Dense(256, activation="relu", kernel_initializer="he_normal")(inputs)
-    x = tf.keras.layers.Dropout(0.3)(x)
-    outputs = tf.keras.layers.Dense(NUM_CLASSES, activation="sigmoid")(x)
+    x = tf.keras.layers.Dropout(0.4)(x)
+    x = tf.keras.layers.BatchNormalization()(x)
+    outputs = tf.keras.layers.Dense(NUM_CLASSES, activation="softmax")(x)
     model = tf.keras.Model(inputs, outputs)
 
-    # Class weights (inverse frequency)
-    class_counts = np.sum(y_train, axis=0)
-    class_weights = (len(y_train) / (NUM_CLASSES * np.maximum(class_counts, 1))).astype(np.float32)
+    # Convert one-hot to integer labels for categorical crossentropy
+    y_train_int = np.argmax(y_train, axis=1)
+    y_val_int = np.argmax(y_val, axis=1)
+
+    # Strong class weights
+    class_counts = np.bincount(y_train_int, minlength=NUM_CLASSES)
+    total = len(y_train_int)
+    class_weights = total / (NUM_CLASSES * np.maximum(class_counts, 1.0))
+    class_weight_dict = {i: float(w) for i, w in enumerate(class_weights)}
     print("Class weights:", dict(zip(LABELS, np.round(class_weights, 3))))
 
+    # Focal loss for multi-class (better for imbalance)
+    def categorical_focal_loss(gamma=2.0, alpha=0.25):
+        def loss(y_true, y_pred):
+            y_true = tf.cast(y_true, tf.int32)
+            y_pred = tf.clip_by_value(y_pred, 1e-7, 1.0)
+            loss = -alpha * tf.pow(1.0 - y_pred, gamma) * tf.math.log(y_pred)
+            return tf.reduce_mean(tf.reduce_sum(loss, axis=1))
+        return loss
+
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=cfg.lr),
-        loss="binary_crossentropy",
+        optimizer=tf.keras.optimizers.Adam(learning_rate=cfg.lr, weight_decay=1e-4),
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(),
         metrics=["accuracy"],
     )
 
