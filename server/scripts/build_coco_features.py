@@ -15,23 +15,26 @@ What it does
    every mapped leaf.
 4. Saves data/bootstrap_seed/features.npz with keys X (N,1024) and Y (N,34).
 
-After this, run `python scripts/retrain_head.py` — it auto-detects
+After this, run `python scripts/retrain_head.py` -- it auto-detects
 features.npz and trains the head with focal loss on the real data.
 
 Usage
 -----
     python scripts/build_coco_features.py \
         --coco_root /path/to/coco \
-        --split train \
+        --split train2017 \
         --out ../data/bootstrap_seed/features.npz
 
     # quick smoke test on a subset
-    python scripts/build_coco_features.py --coco_root ./coco --limit 2000
+    python scripts/build_coco_features.py --coco_root ./coco --split train2017 --limit 2000
 
 COCO directory layout expected
 ------------------------------
-    <coco_root>/<split>/<file_name>                (images)
-    <coco_root>/annotations/instances_<split>.json (annotations)
+    <coco_root>/images/<split>/<file_name>          (images, nested layout)
+    <coco_root>/annotations/instances_<split>.json   (COCO instance annotations)
+
+If your layout is flat (<coco_root>/<split>/<file_name>), the script falls back
+to that automatically, or you can pass --images explicitly.
 
 Requires: tensorflow (or tflite-runtime) and numpy. No Pillow needed; images
 are decoded with tf.image.
@@ -47,8 +50,8 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 SERVER = os.path.dirname(HERE)
 sys.path.insert(0, SERVER)  # so `import taxonomy_parser` resolves
-MODELS = os.path.join(SERVER, "models")
-SEED_DIR = os.path.join(SERVER, "..", "data", "bootstrap_seed")
+MODELS = os.path.normpath(os.path.join(SERVER, "models"))
+SEED_DIR = os.path.normpath(os.path.join(SERVER, "..", "data", "bootstrap_seed"))
 
 IMAGE_SIZE = 224
 FEATURE_SIZE = 1024
@@ -106,12 +109,20 @@ def to_leaf_indices(cat_names):
 
 def load_interpreter():
     import tensorflow as tf
-    interp = tf.lite.Interpreter(os.path.join(MODELS, "base_model.tflite"))
+    tflite_model_path = os.path.normpath(os.path.join(MODELS, "base_model.tflite"))
+    if not os.path.exists(tflite_model_path):
+        raise SystemExit(
+            f"Model file not found at: {tflite_model_path}. "
+            "Make sure models/base_model.tflite is present."
+        )
+    interp = tf.lite.Interpreter(tflite_model_path)
     interp.allocate_tensors()
     inp = interp.get_input_details()[0]
-    # Find the [1,1024] projection output.
     out = interp.get_output_details()
-    proj = next((o for o in out if o["shape"][-1] == FEATURE_SIZE and len(o["shape"]) == 2), out[0])
+    proj = next(
+        (o for o in out if o["shape"][-1] == FEATURE_SIZE and len(o["shape"]) == 2),
+        out[0],
+    )
     return interp, inp, proj
 
 
@@ -127,25 +138,49 @@ def extract_projection(interp, inp, proj, image_path):
     return interp.get_tensor(proj["index"])[0].astype(np.float32)
 
 
+def resolve_image_path(img_dir, fname):
+    """Join img_dir with fname, tolerating COCO file_names that already include
+    a split subfolder (e.g. 'train2017/0001.jpg')."""
+    p = os.path.normpath(os.path.join(img_dir, fname))
+    if os.path.exists(p):
+        return p
+    base = os.path.basename(fname)
+    if base != fname:
+        p2 = os.path.normpath(os.path.join(img_dir, base))
+        if os.path.exists(p2):
+            return p2
+    return p  # best guess so the skip logic reports the missing file
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--coco_root", default=os.path.join(SERVER, "..", "data", "coco"))
-    ap.add_argument("--split", default="train")
-    ap.add_argument("--images", default=None, help="Override image dir (default <coco_root>/<split>)")
+    ap.add_argument("--coco_root",
+                    default=os.path.normpath(os.path.join(SERVER, "..", "data", "coco")))
+    ap.add_argument("--split", default="train2017")
+    ap.add_argument("--images", default=None, help="Override image dir")
     ap.add_argument("--annotations", default=None, help="Override annotations json path")
-    ap.add_argument("--out", default=os.path.join(SEED_DIR, "features.npz"))
+    ap.add_argument("--out",
+                    default=os.path.normpath(os.path.join(SEED_DIR, "features.npz")))
     ap.add_argument("--limit", type=int, default=0, help="Max images to process (0 = all)")
     args = ap.parse_args()
 
     from taxonomy_parser import TaxonomyParser
-    parser = TaxonomyParser(os.path.join(SERVER, "taxonomy.json"))
+    parser = TaxonomyParser(os.path.normpath(os.path.join(SERVER, "taxonomy.json")))
     num_classes = parser.num_classes
     assert num_classes == 34, f"expected 34 classes, got {num_classes}"
 
-    img_dir = args.images or os.path.join(args.coco_root, args.split)
-    ann_path = args.annotations or os.path.join(
-        args.coco_root, "annotations", f"instances_{args.split}.json"
-    )
+    # Image dir resolution: prefer nested <coco_root>/images/<split>, fall back to flat.
+    if args.images:
+        img_dir = os.path.normpath(args.images)
+    else:
+        nested_img_path = os.path.normpath(os.path.join(args.coco_root, "images", args.split))
+        img_dir = nested_img_path if os.path.isdir(nested_img_path) \
+            else os.path.normpath(os.path.join(args.coco_root, args.split))
+
+    ann_path = args.annotations or os.path.normpath(os.path.join(
+        args.coco_root, "annotations", f"instances_{args.split}.json"))
+    out_path = os.path.normpath(args.out)
+
     if not os.path.isdir(img_dir):
         raise SystemExit(f"Image dir not found: {img_dir}")
     if not os.path.exists(ann_path):
@@ -170,7 +205,7 @@ def main():
     for img_id, fname in file_by_id.items():
         if args.limit and used >= args.limit:
             break
-        path = os.path.join(img_dir, fname)
+        path = resolve_image_path(img_dir, fname)
         if not os.path.exists(path):
             skipped += 1
             continue
@@ -194,17 +229,22 @@ def main():
         used += 1
 
     if not X:
-        raise SystemExit("No usable images found (no mapped categories). Check --coco_root/--split.")
+        raise SystemExit("No usable images found (no mapped categories). "
+                         "Check --coco_root/--split and that annotations map to COCO classes.")
 
-    X = np.array(X, dtype=np.float32)
-    Y = np.array(Y, dtype=np.float32)
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    np.savez(args.out, X=X, Y=Y)
-    print(f"[saved] {args.out}  X={X.shape} Y={Y.shape}  (skipped {skipped})")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    np.savez_compressed(out_path,
+                        X=np.array(X, dtype=np.float32),
+                        Y=np.array(Y, dtype=np.float32))
+    print(f"[done] processed {used} images, skipped {skipped}; saved -> {out_path}")
     print("[coverage] positive count per leaf (index:name:count):")
     for i in range(num_classes):
         if per_leaf[i]:
             print(f"   {i:2d}: {parser.leaf_names[i]:14s} {int(per_leaf[i])}")
+    unmapped = [parser.leaf_names[i] for i in range(num_classes) if not per_leaf[i]]
+    if unmapped:
+        print(f"[note] leaves with no COCO coverage ({len(unmapped)}): {', '.join(unmapped)}")
+        print("       (expected for documents/events/selfie; on-device FL will fill these in.)")
 
 
 if __name__ == "__main__":
