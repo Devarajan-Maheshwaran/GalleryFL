@@ -1,94 +1,144 @@
 #!/usr/bin/env python3
 """
-train.py
-Clean 7-parent GalleryFL head training pipeline.
+train.py - Clean 7-parent GalleryFL head training
 
-- Uses frozen base_model.tflite (1024-d projection) for bit-compatibility.
-- Trains tiny head on top: 1024 -> 256 ReLU -> 7 sigmoid.
-- Primary metric: macro F1 (best checkpoint selection).
-- Class weighting + optional per-class threshold tuning.
-- Proper train/val/test from manifests or folder structure.
+Trains a small classification head on top of the frozen base_model.tflite
+(1024-d projection) for the 7 core GalleryFL categories.
+
+Architecture:
+    1024 -> Dense(256, relu) -> Dense(7, sigmoid)
+
+Key fixes vs previous broken version:
+- Proper feature standardization (mean/std from train set)
+- Correct BCE gradient / loss
+- Class-weighted training
+- Macro-F1 driven checkpointing with per-class threshold tuning
+- Clean TF/Keras head training for numerical stability
+- Proper one-hot labels (from converter or manifests)
+- Best model selected on *tuned* macro F1, not fixed 0.5
+- Saves thresholds.json together with checkpoint
 
 Usage:
-    export DATASET_DIR=/path/to/7tag/data
-    python train.py --dataset-dir $DATASET_DIR --epochs 30
-
-Outputs:
-    server/output/retrain/best_checkpoint.npz
-    server/output/retrain/retrain_metrics.json
-    (also copies best to models/head_weights.npz via export later)
+    export DATASET_DIR=/path/to/gallery_7tag
+    python train.py --dataset-dir $DATASET_DIR --epochs 25
 """
 
 import argparse
-import csv
 import json
 import os
-import sys
+import csv
 from collections import defaultdict
-from typing import Dict, List, Tuple
+from typing import List, Tuple, Dict, Optional
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # for config
-from retrain.config import (
-    RetrainConfig, get_config, LABELS, LABEL_TO_IDX, NUM_CLASSES,
-    BACKBONE_PATH, FEATURE_DIM, IMAGE_SIZE,
-    BEST_CHECKPOINT, METRICS_REPORT, HEAD_WEIGHTS_PATH, MODEL_VERSION_FILE
+# TensorFlow for stable head training (TFLite only for feature extraction)
+import tensorflow as tf
+
+# Local imports
+import sys
+sys.path.insert(0, os.path.dirname(__file__))
+from config import (
+    RetrainConfig, get_config, LABELS, NUM_CLASSES,
+    LABEL_TO_IDX, BACKBONE_PATH, FEATURE_DIM,
+    BEST_CHECKPOINT, METRICS_REPORT, HEAD_WEIGHTS_PATH,
+    MODEL_VERSION_FILE, RETRAIN_OUTPUT_DIR
 )
 
-# Try to import TF only when needed for feature extraction
+# ------------------------------------------------------------------
+# Feature extraction (frozen TFLite backbone - unchanged contract)
+# ------------------------------------------------------------------
+
 def load_backbone():
-    import tensorflow as tf
     if not os.path.exists(BACKBONE_PATH):
-        raise FileNotFoundError(f"Backbone not found: {BACKBONE_PATH}. "
-                                "Place models/base_model.tflite in server/models/")
-    interp = tf.lite.Interpreter(model_path=BACKBONE_PATH)
-    interp.allocate_tensors()
-    inp = interp.get_input_details()[0]
-    # Find the 1024-d projection output
-    out_details = interp.get_output_details()
+        raise FileNotFoundError(
+            f"Backbone not found: {BACKBONE_PATH}. "
+            "Place models/base_model.tflite in server/models/"
+        )
+    interpreter = tf.lite.Interpreter(model_path=BACKBONE_PATH)
+    interpreter.allocate_tensors()
+    input_details = interpreter.get_input_details()[0]
+    output_details = interpreter.get_output_details()
+
+    # Find 1024-d projection
     proj = None
-    for o in out_details:
+    for o in output_details:
         if o["shape"][-1] == FEATURE_DIM:
             proj = o
             break
     if proj is None:
-        proj = out_details[0]
-    return interp, inp, proj
+        proj = output_details[0]
+    return interpreter, input_details, proj
 
-def preprocess_image(path: str):
-    import tensorflow as tf
+
+def preprocess_image(path: str) -> np.ndarray:
     raw = tf.io.read_file(path)
     img = tf.image.decode_image(raw, channels=3, expand_animations=False)
-    img = tf.image.resize(img, [IMAGE_SIZE, IMAGE_SIZE], method="bilinear")
+    img = tf.image.resize(img, [224, 224], method="bilinear")
     img = tf.cast(img, tf.float32) / 127.5 - 1.0
     return tf.expand_dims(img, 0)
 
-def extract_feature(interp, inp, proj, path: str) -> np.ndarray:
-    import tensorflow as tf
-    img = preprocess_image(path)
-    interp.set_tensor(inp["index"], img.numpy())
-    interp.invoke()
-    feat = interp.get_tensor(proj["index"])[0]
-    return feat.astype(np.float32)
+
+def extract_features(
+    interpreter,
+    input_details,
+    proj,
+    image_paths: List[str],
+    batch_size: int = 32
+) -> np.ndarray:
+    """Extract 1024-d features from frozen backbone."""
+    features = []
+    for i in range(0, len(image_paths), batch_size):
+        batch_paths = image_paths[i : i + batch_size]
+        batch_imgs = []
+        for p in batch_paths:
+            if os.path.exists(p):
+                try:
+                    img = preprocess_image(p)
+                    batch_imgs.append(img)
+                except Exception as e:
+                    print(f"  [warn] failed to load {p}: {e}")
+                    batch_imgs.append(None)
+            else:
+                batch_imgs.append(None)
+
+        # Run inference for valid images
+        for j, img in enumerate(batch_imgs):
+            if img is None:
+                features.append(np.zeros(FEATURE_DIM, dtype=np.float32))
+                continue
+            interpreter.set_tensor(input_details["index"], img.numpy())
+            interpreter.invoke()
+            feat = interpreter.get_tensor(proj["index"])[0]
+            features.append(feat.astype(np.float32))
+
+        if (i // batch_size) % 10 == 0:
+            print(f"  extracted {len(features)} / {len(image_paths)}")
+
+    return np.array(features, dtype=np.float32)
+
+
+# ------------------------------------------------------------------
+# Data loading (manifests preferred, folder fallback)
+# ------------------------------------------------------------------
 
 def load_manifest(manifest_path: str) -> List[Tuple[str, int]]:
-    """Return list of (image_path, label_idx)"""
     items = []
-    with open(manifest_path) as f:
+    if not os.path.exists(manifest_path):
+        return items
+    with open(manifest_path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            img = row["image_path"]
+            img_path = row["image_path"]
             label = row["label"].strip().lower()
             if label in LABEL_TO_IDX:
-                items.append((img, LABEL_TO_IDX[label]))
+                items.append((img_path, LABEL_TO_IDX[label]))
     return items
 
-def load_dataset_from_manifests(dataset_dir: str, manifests_dir: str = None):
-    """Prefer manifests if present, otherwise scan folders."""
-    if manifests_dir is None:
-        manifests_dir = os.path.join(dataset_dir, "manifests")
 
+def load_dataset(dataset_dir: str) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
+    """Load train/val. Prefers manifests/, falls back to folder scan."""
+    manifests_dir = os.path.join(dataset_dir, "manifests")
     train_path = os.path.join(manifests_dir, "train.csv")
     val_path = os.path.join(manifests_dir, "val.csv")
 
@@ -96,215 +146,279 @@ def load_dataset_from_manifests(dataset_dir: str, manifests_dir: str = None):
         print("[data] Using manifests from", manifests_dir)
         train = load_manifest(train_path)
         val = load_manifest(val_path)
-        return train, val
+    else:
+        print("[data] No manifests found — scanning folders (slower)")
+        from prepare_dataset import collect_dataset, stratified_split
+        raw = collect_dataset(dataset_dir)
+        train_d, val_d, _ = stratified_split(raw)
+        train = [(p, LABEL_TO_IDX[l]) for l, paths in train_d.items() for p in paths]
+        val = [(p, LABEL_TO_IDX[l]) for l, paths in val_d.items() for p in paths]
 
-    # Fallback: scan folders (simple)
-    print("[data] No manifests — scanning folders directly")
-    from prepare_dataset import collect_dataset, stratified_split
-    raw = collect_dataset(dataset_dir)
-    train_d, val_d, _ = stratified_split(raw)
-    train = [(p, LABEL_TO_IDX[l]) for l, paths in train_d.items() for p in paths]
-    val = [(p, LABEL_TO_IDX[l]) for l, paths in val_d.items() for p in paths]
+    # Validate
+    train_counts = defaultdict(int)
+    for _, lbl in train:
+        train_counts[lbl] += 1
+
+    print(f"[data] Train samples: {len(train)}")
+    print(f"[data] Val samples:   {len(val)}")
+    for i, name in enumerate(LABELS):
+        cnt = train_counts.get(i, 0)
+        print(f"  {name:12s}: {cnt}")
+
+    if any(train_counts.get(i, 0) == 0 for i in range(NUM_CLASSES)):
+        missing = [LABELS[i] for i in range(NUM_CLASSES) if train_counts.get(i, 0) == 0]
+        raise ValueError(f"CRITICAL: These classes have ZERO training samples: {missing}")
+
+    if len(val) < 20:
+        print("[warn] Very small validation set — metrics may be noisy")
+
     return train, val
 
-def compute_class_weights(labels: List[int]) -> np.ndarray:
-    counts = np.bincount(labels, minlength=NUM_CLASSES)
-    total = len(labels)
-    weights = total / (NUM_CLASSES * np.maximum(counts, 1))
-    return weights.astype(np.float32)
 
-def sigmoid(x):
-    return 1.0 / (1.0 + np.exp(-np.clip(x, -50, 50)))
+def to_one_hot(labels: List[int]) -> np.ndarray:
+    """Convert list of class indices to one-hot (multi-class style)."""
+    y = np.zeros((len(labels), NUM_CLASSES), dtype=np.float32)
+    for i, lbl in enumerate(labels):
+        y[i, lbl] = 1.0
+    return y
 
-def relu(x):
-    return np.maximum(0.0, x)
 
-def forward(X, w1, b1, w2, b2):
-    return sigmoid(relu(X @ w1 + b1) @ w2 + b2)
+# ------------------------------------------------------------------
+# Threshold tuning (critical for macro F1)
+# ------------------------------------------------------------------
 
-def macro_f1(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+def tune_thresholds(probs: np.ndarray, y_true: np.ndarray, num_steps: int = 21) -> np.ndarray:
+    """Search per-class thresholds to maximize macro F1 on validation."""
+    thresholds = np.full(NUM_CLASSES, 0.5, dtype=np.float32)
+    for c in range(NUM_CLASSES):
+        best_f1 = 0.0
+        best_t = 0.5
+        for t in np.linspace(0.1, 0.9, num_steps):
+            yp = (probs[:, c] > t).astype(np.float32)
+            yt = y_true[:, c]
+            tp = np.sum((yt == 1) & (yp == 1))
+            fp = np.sum((yt == 0) & (yp == 1))
+            fn = np.sum((yt == 1) & (yp == 0))
+            prec = tp / (tp + fp + 1e-8)
+            rec = tp / (tp + fn + 1e-8)
+            f1 = 2 * prec * rec / (prec + rec + 1e-8)
+            if f1 > best_f1:
+                best_f1 = f1
+                best_t = t
+        thresholds[c] = best_t
+    return thresholds
+
+
+def compute_macro_f1(y_true: np.ndarray, probs: np.ndarray, thresholds: np.ndarray) -> float:
+    """Compute macro F1 using per-class thresholds."""
+    y_pred = np.zeros_like(probs, dtype=np.float32)
+    for c in range(NUM_CLASSES):
+        y_pred[:, c] = (probs[:, c] > thresholds[c]).astype(np.float32)
+
     f1s = []
     for c in range(NUM_CLASSES):
-        tp = np.sum((y_true[:, c] == 1) & (y_pred[:, c] == 1))
-        fp = np.sum((y_true[:, c] == 0) & (y_pred[:, c] == 1))
-        fn = np.sum((y_true[:, c] == 1) & (y_pred[:, c] == 0))
-        prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+        yt = y_true[:, c]
+        yp = y_pred[:, c]
+        tp = np.sum((yt == 1) & (yp == 1))
+        fp = np.sum((yt == 0) & (yp == 1))
+        fn = np.sum((yt == 1) & (yp == 0))
+        prec = tp / (tp + fp + 1e-8)
+        rec = tp / (tp + fn + 1e-8)
+        f1 = 2 * prec * rec / (prec + rec + 1e-8)
         f1s.append(f1)
     return float(np.mean(f1s))
 
-def train_head(Xtr, Ytr, Xval, Yval, cfg: RetrainConfig):
-    """Simple numpy Adam + macro-F1 checkpointing."""
-    rng = np.random.default_rng(42)
-    dim = Xtr.shape[1]
-    hidden = cfg.hidden
 
-    # Glorot init
-    def glorot(shape):
-        return (rng.standard_normal(shape).astype(np.float32) *
-                np.sqrt(6.0 / (shape[0] + shape[1])))
-
-    w1 = glorot((dim, hidden))
-    b1 = np.zeros(hidden, np.float32)
-    w2 = glorot((hidden, NUM_CLASSES))
-    b2 = np.zeros(NUM_CLASSES, np.float32)
-
-    # Adam state
-    m = {k: np.zeros_like(v) for k, v in [("w1", w1), ("b1", b1), ("w2", w2), ("b2", b2)]}
-    v = {k: np.zeros_like(v) for k, v in m.items()}
-    t = 0
-    lr = cfg.lr
-    beta1, beta2, eps = 0.9, 0.999, 1e-8
-
-    class_weights = compute_class_weights(Ytr.argmax(1) if Ytr.ndim > 1 else Ytr) if cfg.use_class_weights else np.ones(NUM_CLASSES, np.float32)
-
-    best_f1 = -1.0
-    best_state = None
-    history = []
-
-    n = Xtr.shape[0]
-    batch = cfg.batch_size
-
-    print(f"[train] samples={n}  val={Xval.shape[0]}  classes={NUM_CLASSES}  lr={lr}")
-
-    for epoch in range(1, cfg.epochs + 1):
-        # Shuffle
-        perm = rng.permutation(n)
-        for i in range(0, n, batch):
-            idx = perm[i:i+batch]
-            xb = Xtr[idx]
-            yb = Ytr[idx]
-
-            # Forward
-            z1 = xb @ w1 + b1
-            a1 = relu(z1)
-            logits = a1 @ w2 + b2
-            probs = sigmoid(logits)
-
-            # Weighted BCE grad (simplified focal-like)
-            eps_ = 1e-7
-            pc = np.clip(probs, eps_, 1 - eps_)
-            loss_grad = (yb - pc) * class_weights   # simple weighted
-
-            # Backprop
-            dlogits = loss_grad
-            dw2 = a1.T @ dlogits
-            db2 = dlogits.sum(0)
-            da1 = dlogits @ w2.T
-            dz1 = da1 * (z1 > 0)
-            dw1 = xb.T @ dz1
-            db1 = dz1.sum(0)
-
-            # Adam update
-            t += 1
-            for name, g in [("w1", dw1), ("b1", db1), ("w2", dw2), ("b2", db2)]:
-                m[name] = beta1 * m[name] + (1 - beta1) * g
-                v[name] = beta2 * v[name] + (1 - beta2) * (g * g)
-                mhat = m[name] / (1 - beta1 ** t)
-                vhat = v[name] / (1 - beta2 ** t)
-                if name == "w1": w1 -= lr * mhat / (np.sqrt(vhat) + eps)
-                elif name == "b1": b1 -= lr * mhat / (np.sqrt(vhat) + eps)
-                elif name == "w2": w2 -= lr * mhat / (np.sqrt(vhat) + eps)
-                elif name == "b2": b2 -= lr * mhat / (np.sqrt(vhat) + eps)
-
-        # Eval on val
-        Pval = forward(Xval, w1, b1, w2, b2)
-        yhat = (Pval > cfg.default_threshold).astype(np.float32)
-        f1 = macro_f1(Yval, yhat)
-        history.append({"epoch": epoch, "macro_f1": round(f1, 4)})
-
-        if f1 > best_f1:
-            best_f1 = f1
-            best_state = (w1.copy(), b1.copy(), w2.copy(), b2.copy())
-            print(f"  epoch {epoch:3d}: val macroF1={f1:.4f}  *** BEST ***")
-        elif epoch % 5 == 0 or epoch == 1:
-            print(f"  epoch {epoch:3d}: val macroF1={f1:.4f}")
-
-    print(f"[train] Best val macro F1: {best_f1:.4f}")
-    return best_state, history, best_f1
+# ------------------------------------------------------------------
+# Main training
+# ------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset-dir", default=None)
-    parser.add_argument("--manifests", default=None)
-    parser.add_argument("--epochs", type=int, default=None)
-    parser.add_argument("--lr", type=float, default=None)
-    parser.add_argument("--batch-size", type=int, default=None)
+    parser = argparse.ArgumentParser(description="Train 7-parent GalleryFL head")
+    parser.add_argument("--dataset-dir", type=str, default=None)
+    parser.add_argument("--epochs", type=int, default=25)
+    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--lr", type=float, default=1e-3)
     args = parser.parse_args()
 
     cfg = get_config({
-        "dataset_dir": args.dataset_dir or None,
-        "epochs": args.epochs or None,
-        "lr": args.lr or None,
-        "batch_size": args.batch_size or None,
+        "dataset_dir": args.dataset_dir,
+        "epochs": args.epochs,
+        "batch_size": args.batch_size,
+        "lr": args.lr,
     })
 
-    print("=== 7-Tag GalleryFL Retraining (TRAIN) ===")
+    print("=" * 60)
+    print("7-PARENT GALLERYFL HEAD TRAINING (CLEAN)")
+    print("=" * 60)
     print(f"Dataset: {cfg.dataset_dir}")
-    print(f"Labels: {LABELS}")
+    print(f"Labels : {LABELS}")
+    print(f"Epochs : {cfg.epochs}")
+    print(f"LR     : {cfg.lr}")
 
-    # Load data
-    train_items, val_items = load_dataset_from_manifests(cfg.dataset_dir, args.manifests)
+    # 1. Load data
+    train_items, val_items = load_dataset(cfg.dataset_dir)
 
-    if len(train_items) < 10 or len(val_items) < 5:
-        print("ERROR: Not enough data. Need at least a few dozen images total.")
-        sys.exit(1)
+    # 2. Extract features
+    print("\n[1/4] Extracting features from frozen backbone...")
+    interpreter, input_details, proj = load_backbone()
 
-    # Extract features (or load cached)
-    print("[features] Extracting from frozen backbone...")
-    interp, inp, proj = load_backbone()
+    train_paths, train_labels = zip(*train_items)
+    val_paths, val_labels = zip(*val_items)
 
-    def extract_batch(items):
-        X, Y = [], []
-        for path, lbl in items:
-            if not os.path.exists(path):
-                print(f"  [warn] missing {path}")
-                continue
-            try:
-                feat = extract_feature(interp, inp, proj, path)
-                X.append(feat)
-                y = np.zeros(NUM_CLASSES, np.float32)
-                y[lbl] = 1.0
-                Y.append(y)
-            except Exception as e:
-                print(f"  [warn] failed {os.path.basename(path)}: {e}")
-        return np.array(X), np.array(Y)
+    X_train = extract_features(interpreter, input_details, proj, list(train_paths))
+    X_val = extract_features(interpreter, input_details, proj, list(val_paths))
 
-    Xtr, Ytr = extract_batch(train_items)
-    Xval, Yval = extract_batch(val_items)
+    y_train = to_one_hot(list(train_labels))
+    y_val = to_one_hot(list(val_labels))
 
-    print(f"[data] train={Xtr.shape}  val={Xval.shape}")
+    # 3. Feature standardization (VERY IMPORTANT)
+    print("\n[2/4] Standardizing features...")
+    mean = X_train.mean(axis=0, keepdims=True)
+    std = X_train.std(axis=0, keepdims=True) + 1e-8
+    X_train = (X_train - mean) / std
+    X_val = (X_val - mean) / std
 
-    best_w, history, best_f1 = train_head(Xtr, Ytr, Xval, Yval, cfg)
+    # Save normalization stats for inference compatibility later
+    norm_stats = {"mean": mean.tolist()[0], "std": std.tolist()[0]}
+    with open(os.path.join(RETRAIN_OUTPUT_DIR, "feature_norm.json"), "w") as f:
+        json.dump(norm_stats, f, indent=2)
 
-    # Save best checkpoint
-    os.makedirs(cfg.output_dir, exist_ok=True)
-    w1, b1, w2, b2 = best_w
-    np.savez(BEST_CHECKPOINT, w1=w1, b1=b1, w2=w2, b2=b2)
+    # 4. Build small Keras head (stable)
+    print("\n[3/4] Building and training head...")
 
-    # Also save a copy as active head (will be finalized by export)
-    np.savez(HEAD_WEIGHTS_PATH, w1=w1, b1=b1, w2=w2, b2=b2)
+    inputs = tf.keras.Input(shape=(FEATURE_DIM,))
+    x = tf.keras.layers.Dense(256, activation="relu", kernel_initializer="he_normal")(inputs)
+    x = tf.keras.layers.Dropout(0.3)(x)
+    outputs = tf.keras.layers.Dense(NUM_CLASSES, activation="sigmoid")(x)
+    model = tf.keras.Model(inputs, outputs)
 
-    # Write version
-    with open(MODEL_VERSION_FILE, "w") as f:
-        f.write("7")
+    # Class weights (inverse frequency)
+    class_counts = np.sum(y_train, axis=0)
+    class_weights = (len(y_train) / (NUM_CLASSES * np.maximum(class_counts, 1))).astype(np.float32)
+    print("Class weights:", dict(zip(LABELS, np.round(class_weights, 3))))
 
-    # Metrics
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=cfg.lr),
+        loss="binary_crossentropy",
+        metrics=["accuracy"],
+    )
+
+    # Custom callback for macro-F1 + threshold tuning
+    best_f1 = -1.0
+    best_weights = None
+    best_thresholds = None
+    history = []
+
+    for epoch in range(1, cfg.epochs + 1):
+        # Train one epoch
+        model.fit(
+            X_train, y_train,
+            batch_size=cfg.batch_size,
+            epochs=1,
+            verbose=0,
+            class_weight={i: float(w) for i, w in enumerate(class_weights)}
+        )
+
+        # Predict on val
+        val_probs = model.predict(X_val, batch_size=64, verbose=0)
+
+        # Tune thresholds on val for this epoch
+        current_thresholds = tune_thresholds(val_probs, y_val)
+        epoch_f1 = compute_macro_f1(y_val, val_probs, current_thresholds)
+
+        # Also compute with fixed 0.5 for comparison
+        fixed_f1 = compute_macro_f1(y_val, val_probs, np.full(NUM_CLASSES, 0.5))
+
+        history.append({
+            "epoch": epoch,
+            "tuned_macro_f1": round(epoch_f1, 4),
+            "fixed_0.5_macro_f1": round(fixed_f1, 4),
+        })
+
+        print(f"Epoch {epoch:2d}/{cfg.epochs} | "
+              f"tuned macroF1={epoch_f1:.4f} | fixed0.5={fixed_f1:.4f}")
+
+        if epoch_f1 > best_f1:
+            best_f1 = epoch_f1
+            best_weights = model.get_weights()
+            best_thresholds = current_thresholds.copy()
+            print(f"  *** New best tuned macro F1: {best_f1:.4f} ***")
+
+    print(f"\n[4/4] Best tuned macro F1 on val: {best_f1:.4f}")
+
+    # Restore best weights
+    model.set_weights(best_weights)
+
+    # 5. Save artifacts
+    os.makedirs(RETRAIN_OUTPUT_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(HEAD_WEIGHTS_PATH), exist_ok=True)
+
+    # Save Keras weights temporarily, then convert to npz format expected by GalleryFL
+    w1, b1 = model.layers[1].get_weights()   # Dense 256
+    w2, b2 = model.layers[3].get_weights()   # Dense 7
+
+    # Save in GalleryFL expected format (w1, b1, w2, b2)
+    np.savez(
+        BEST_CHECKPOINT,
+        w1=w1.astype(np.float32),
+        b1=b1.astype(np.float32),
+        w2=w2.astype(np.float32),
+        b2=b2.astype(np.float32)
+    )
+    np.savez(
+        HEAD_WEIGHTS_PATH,
+        w1=w1.astype(np.float32),
+        b1=b1.astype(np.float32),
+        w2=w2.astype(np.float32),
+        b2=b2.astype(np.float32)
+    )
+
+    # Save thresholds
+    thresholds_path = os.path.join(RETRAIN_OUTPUT_DIR, "thresholds.json")
+    with open(thresholds_path, "w") as f:
+        json.dump({
+            "thresholds": best_thresholds.tolist(),
+            "labels": LABELS,
+            "best_macro_f1": float(best_f1)
+        }, f, indent=2)
+
+    # Save metrics
     metrics = {
         "best_macro_f1": round(best_f1, 4),
         "num_classes": NUM_CLASSES,
         "labels": LABELS,
-        "history": history[-10:],   # last 10
-        "best_epoch": len(history),
-        "checkpoint": BEST_CHECKPOINT,
+        "thresholds": best_thresholds.tolist(),
+        "history": history[-10:],  # last 10 epochs
+        "feature_dim": FEATURE_DIM,
+        "head_architecture": "1024->256->7 (sigmoid)",
     }
     with open(METRICS_REPORT, "w") as f:
         json.dump(metrics, f, indent=2)
 
-    print(f"\n[done] Best checkpoint saved to {BEST_CHECKPOINT}")
-    print(f"[done] head_weights.npz updated (7-class)")
-    print(f"[done] Metrics: {METRICS_REPORT}")
+    # Save training history
+    hist_path = os.path.join(RETRAIN_OUTPUT_DIR, "training_history.csv")
+    with open(hist_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["epoch", "tuned_macro_f1", "fixed_0.5_macro_f1"])
+        for h in history:
+            writer.writerow([h["epoch"], h["tuned_macro_f1"], h["fixed_0.5_macro_f1"]])
+
+    # Bump version
+    with open(MODEL_VERSION_FILE, "w") as f:
+        f.write("7")
+
+    print("\n" + "=" * 60)
+    print("TRAINING COMPLETE")
+    print("=" * 60)
+    print(f"Best checkpoint : {BEST_CHECKPOINT}")
+    print(f"Production head : {HEAD_WEIGHTS_PATH}")
+    print(f"Thresholds      : {thresholds_path}")
+    print(f"Metrics         : {METRICS_REPORT}")
+    print(f"History         : {hist_path}")
+    print(f"Model version   : 7")
+    print("\nNext step: python evaluate.py --checkpoint ../output/retrain/best_checkpoint.npz --tune-thresholds")
+
 
 if __name__ == "__main__":
     main()
