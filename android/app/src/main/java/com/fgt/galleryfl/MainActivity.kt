@@ -176,10 +176,14 @@ fun MainScreen(
         }
     }
 
-    // Initial Load
+    // Initial Load — also hide trashed images (soft-delete via Trash).
     LaunchedEffect(hasPermission) {
         if (hasPermission) {
-            photos = GalleryRepository(context).fetchRecentImages(limit = 500)
+            val all = GalleryRepository(context).fetchRecentImages(limit = 500)
+            val trashed = try {
+                withContext(Dispatchers.IO) { MediaStateStore.getTrashed(context).toSet() }
+            } catch (_: Exception) { emptySet() }
+            photos = if (trashed.isEmpty()) all else all.filter { it.uri.toString() !in trashed }
         }
     }
 
@@ -188,6 +192,28 @@ fun MainScreen(
         try {
             canUndoOrganize = AppDatabase.getDatabase(context).operationLogDao().getLatestLog() != null
         } catch (_: Exception) { /* DB not ready yet */ }
+    }
+
+    // Restore the previously synced model so Scan & Group works without an
+    // immediate re-sync after the app is killed and reopened.
+    LaunchedEffect(Unit) {
+        try {
+            val restored = ModelStateStore.loadWeights(context)
+            if (restored != null && restored.size == 4) {
+                activeWeights = restored
+                currentModelVersion = ModelStateStore.loadModelVersion(context)
+            }
+        } catch (_: Exception) { /* ignore */ }
+    }
+
+    // Restore the last Scan & Group results so albums survive app exit.
+    LaunchedEffect(photos) {
+        if (photos.isNotEmpty() && smartAlbums.isEmpty()) {
+            try {
+                val albums = restoreScanResults(context, photos)
+                if (albums.isNotEmpty()) smartAlbums = albums
+            } catch (_: Exception) { /* ignore */ }
+        }
     }
 
     // FL WebSocket Listeners
@@ -224,6 +250,8 @@ fun MainScreen(
                     }
                     activeWeights = globalWeights
                     currentModelVersion = serverVersion
+                    ModelStateStore.saveWeights(context, globalWeights)
+                    ModelStateStore.saveModelVersion(context, serverVersion)
 
                     val numClasses = globalWeights[2].size / 256
                     val repo = GalleryRepository(context)
@@ -337,7 +365,9 @@ fun MainScreen(
                             onImageClick = { selectedImage = it }
                         )
                         1 -> ExploreScreen(
+                            photos = photos,
                             smartAlbums = smartAlbums,
+                            onImageClick = { selectedImage = it },
                             isScanning = isScanning,
                             onScanClick = {
                                 isScanning = true
@@ -348,11 +378,24 @@ fun MainScreen(
                                         if (activeWeights == null) {
                                             withContext(Dispatchers.Main) {
                                                 isScanning = false
-                                                statusText = "Connect to sync model first"
+                                                statusText = "Model is not synced. Sync the model to start scanning."
                                                 showFLDialog = true
                                             }
                                             return@launch
                                         }
+                                        // Best-effort backend check: confirm a
+                                        // model is actually loaded server-side.
+                                        try {
+                                            val status = RetrofitClient.getApiService(currentServerUrl, httpClient).getModelStatus()
+                                            if (!status.loaded || !status.head_present) {
+                                                withContext(Dispatchers.Main) {
+                                                    isScanning = false
+                                                    statusText = "Model is not synced. Sync the model to start scanning."
+                                                    showFLDialog = true
+                                                }
+                                                return@launch
+                                            }
+                                        } catch (_: Exception) { /* offline: trust local state */ }
 
                                         val numClasses = activeWeights!![2].size / 256
                                         val head = ClassificationHead(numClasses)
@@ -386,18 +429,43 @@ fun MainScreen(
                                             }
                                         }
 
+                                        val entitiesToSave = mutableListOf<ScanResultEntity>()
                                         val finalAlbums = albumMap.map { (c, imagePairs) ->
                                             val policy = TaxonomyConfig.getPolicyForClassIndex(c)!!
-                                            val sortedImages = imagePairs.sortedByDescending { it.second }.map { it.first }
+                                            val sorted = imagePairs.sortedByDescending { it.second }
+                                            val sortedImages = sorted.map { it.first }
+                                            val avgConf = confidenceMap[c]!! / sortedImages.size
+                                            val folderPath = "${policy.category.name}/${policy.tag.name}"
+                                            sorted.forEachIndexed { pos, (img, conf) ->
+                                                entitiesToSave.add(
+                                                    ScanResultEntity(
+                                                        classIndex = c,
+                                                        tagName = policy.tag.name,
+                                                        folderPath = folderPath,
+                                                        imageUri = img.uri.toString(),
+                                                        confidence = conf,
+                                                        positionInAlbum = pos,
+                                                        avgConfidence = avgConf,
+                                                        thresholdUsed = thresholds[c]
+                                                    )
+                                                )
+                                            }
                                             GalleryAlbum(
-                                                folderPath = "${policy.category.name}/${policy.tag.name}",
+                                                folderPath = folderPath,
                                                 tagName = policy.tag.name,
                                                 images = sortedImages,
-                                                averageConfidence = confidenceMap[c]!! / sortedImages.size,
+                                                averageConfidence = avgConf,
                                                 thresholdUsed = thresholds[c],
                                                 localPersonalizationAffected = false
                                             )
                                         }
+
+                                        // Persist the scan so results survive app exit.
+                                        try {
+                                            val dao = AppDatabase.getDatabase(context).scanResultDao()
+                                            dao.clear()
+                                            if (entitiesToSave.isNotEmpty()) dao.insertAll(entitiesToSave)
+                                        } catch (_: Exception) { /* best-effort */ }
 
                                         withContext(Dispatchers.Main) {
                                             smartAlbums = finalAlbums
@@ -422,7 +490,7 @@ fun MainScreen(
                                     try {
                                         if (activeWeights == null) {
                                             withContext(Dispatchers.Main) {
-                                                statusText = "Connect to sync model first"
+                                                statusText = "Model is not synced. Sync the model first."
                                                 showFLDialog = true
                                             }
                                             return@launch
@@ -471,8 +539,7 @@ fun MainScreen(
                             canUndo = canUndoOrganize,
                             modelReady = activeWeights != null
                         )
-                        2 -> LibraryScreen(smartAlbums)
-                        3 -> SearchScreen(
+                        2 -> SearchScreen(
                             photos = filteredPhotos,
                             smartAlbums = smartAlbums,
                             onImageClick = { selectedImage = it }
@@ -532,7 +599,9 @@ fun MainScreen(
                         val serverVersion = response.headers()["X-Model-Version"]?.toIntOrNull() ?: reg.model_version
                         activeWeights = WeightSerializer.deserialize(response.body()?.string() ?: "")
                         currentModelVersion = serverVersion
-                        
+                        ModelStateStore.saveWeights(context, activeWeights!!)
+                        ModelStateStore.saveModelVersion(context, serverVersion)
+
                         withContext(Dispatchers.Main) {
                             wsClient.connect(currentServerUrl, reg.client_id, accessCode)
                             registeredClientId = reg.client_id
@@ -611,6 +680,35 @@ fun PhotosTopBar(
     )
 }
 
+/**
+ * Rebuild the persisted Scan & Group albums from [ScanResultEntity] rows,
+ * resolving each stored URI back to its [GalleryImage] from the current
+ * gallery. Called on launch so results survive app exit.
+ */
+private suspend fun restoreScanResults(
+    context: Context,
+    photos: List<GalleryImage>
+): List<GalleryAlbum> {
+    val entities = AppDatabase.getDatabase(context).scanResultDao().getAll()
+    if (entities.isEmpty()) return emptyList()
+    val byUri = photos.associateBy { it.uri.toString() }
+    return entities
+        .groupBy { it.classIndex }
+        .mapNotNull { (_, rows) ->
+            val images = rows.mapNotNull { byUri[it.imageUri] }
+            if (images.isEmpty()) return@mapNotNull null
+            val first = rows.first()
+            GalleryAlbum(
+                folderPath = first.folderPath,
+                tagName = first.tagName,
+                images = images,
+                averageConfidence = first.avgConfidence,
+                thresholdUsed = first.thresholdUsed,
+                localPersonalizationAffected = false
+            )
+        }
+}
+
 @Composable
 fun PhotosBottomNav(selectedTab: Int, onTabSelected: (Int) -> Unit) {
     GlassContainer(
@@ -631,7 +729,6 @@ fun PhotosBottomNav(selectedTab: Int, onTabSelected: (Int) -> Unit) {
             val items = listOf(
                 Icons.Default.Photo to "Photos",
                 Icons.Default.Favorite to "For You",
-                Icons.Default.CollectionsBookmark to "Albums",
                 Icons.Default.Search to "Search"
             )
             items.forEachIndexed { index, (icon, label) ->
@@ -684,6 +781,10 @@ fun FLSyncDialog(
             codeError = "Use the format IP:PORT@ACCESS_CODE"
             return
         }
+        if (!AccessCodeGenerator.isValid(parts[1].uppercase())) {
+            codeError = "Access code must be 8 characters (A-Z and 2-9, no 0/O/1/I/L)."
+            return
+        }
         codeError = null
         onConnect(code)
     }
@@ -729,7 +830,26 @@ fun FLSyncDialog(
                         label = { Text("Coordinator Access Code") },
                         placeholder = { Text("IP:PORT@ACCESS_CODE") },
                         isError = codeError != null,
-                        supportingText = codeError?.let { { Text(it, color = FGTColors.Error) } },
+                        supportingText = codeError?.let { { Text(it, color = FGTColors.Error) } }
+                            ?: {
+                                Text(
+                                    "8-character code (letters + digits). Tap the icon to generate one.",
+                                    color = FGTColors.TextSecondary
+                                )
+                            },
+                        trailingIcon = {
+                            IconButton(onClick = {
+                                val p = codeInput.split("@")
+                                codeInput = if (p.size == 2) "${p[0]}@${AccessCodeGenerator.generate()}" else AccessCodeGenerator.generate()
+                                codeError = null
+                            }) {
+                                Icon(
+                                    Icons.Default.Refresh,
+                                    contentDescription = "Generate access code",
+                                    tint = FGTColors.AccentPrimary
+                                )
+                            }
+                        },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )

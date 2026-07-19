@@ -8,10 +8,13 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.*
@@ -32,6 +35,8 @@ import com.fgt.galleryfl.data.local.AppDatabase
 import com.fgt.galleryfl.data.local.GalleryImage
 import com.fgt.galleryfl.data.local.GalleryRepository
 import com.fgt.galleryfl.data.local.LocalFeedbackStore
+import com.fgt.galleryfl.data.local.MediaStateEntity
+import com.fgt.galleryfl.data.local.MediaStateStore
 import com.fgt.galleryfl.data.local.RecordTagFeedbackUseCase
 import com.fgt.galleryfl.data.ml.ClassificationHead
 import com.fgt.galleryfl.data.ml.FeatureExtractor
@@ -64,6 +69,34 @@ fun ImageDetailScreen(
     var heatmap by remember { mutableStateOf<Array<FloatArray>?>(null) }
     var predictedTag by remember { mutableStateOf<String?>(null) }
     var predictedClassIndex by remember { mutableStateOf(-1) }
+
+    // For You organizational state: Favorites / Archive / Trash.
+    var mediaState by remember { mutableStateOf<MediaStateEntity?>(null) }
+    LaunchedEffect(image.uri) {
+        mediaState = try {
+            AppDatabase.getDatabase(context).mediaStateDao().getForUri(image.uri.toString())
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun toggleFavorite() = scope.launch(Dispatchers.IO) {
+        MediaStateStore.setFavorite(context, image.uri.toString(), mediaState?.favorite != true)
+        val updated = AppDatabase.getDatabase(context).mediaStateDao().getForUri(image.uri.toString())
+        withContext(Dispatchers.Main) { mediaState = updated }
+    }
+
+    fun toggleArchive() = scope.launch(Dispatchers.IO) {
+        MediaStateStore.setArchived(context, image.uri.toString(), mediaState?.archived != true)
+        val updated = AppDatabase.getDatabase(context).mediaStateDao().getForUri(image.uri.toString())
+        withContext(Dispatchers.Main) { mediaState = updated }
+    }
+
+    fun toggleTrash() = scope.launch(Dispatchers.IO) {
+        MediaStateStore.setTrashed(context, image.uri.toString(), mediaState?.trashed != true)
+        val updated = AppDatabase.getDatabase(context).mediaStateDao().getForUri(image.uri.toString())
+        withContext(Dispatchers.Main) { mediaState = updated }
+    }
 
     // Flick-to-dismiss state.
     val dragOffsetY = remember { mutableStateOf(0f) }
@@ -163,6 +196,27 @@ fun ImageDetailScreen(
                     }
                     IconButton(onClick = { showInfo = !showInfo }) {
                         Icon(Icons.Default.Info, contentDescription = "Info")
+                    }
+                    IconButton(onClick = { toggleFavorite() }) {
+                        Icon(
+                            Icons.Default.Favorite,
+                            contentDescription = "Favorite",
+                            tint = if (mediaState?.favorite == true) FGTColors.AccentPrimary else Color.White
+                        )
+                    }
+                    IconButton(onClick = { toggleArchive() }) {
+                        Icon(
+                            Icons.Default.Archive,
+                            contentDescription = "Archive",
+                            tint = if (mediaState?.archived == true) FGTColors.AccentPrimary else Color.White
+                        )
+                    }
+                    IconButton(onClick = { toggleTrash() }) {
+                        Icon(
+                            Icons.Outlined.DeleteOutline,
+                            contentDescription = "Trash",
+                            tint = if (mediaState?.trashed == true) FGTColors.AccentPrimary else Color.White
+                        )
                     }
                     IconButton(onClick = { onDelete(image) }) {
                         Icon(Icons.Default.Delete, contentDescription = "Delete", tint = FGTColors.Error)

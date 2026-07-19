@@ -1,34 +1,28 @@
-"""Retrain the GalleryFL classification head (properly).
+"""Bootstrap-train the GalleryFL classification head on REAL features.
 
-The head is a tiny MLP (1024->256 relu -> 34 sigmoid) on top of the frozen
-ImageNet MobileNetV3 backbone. This script trains it with a *smarter* loss
-(focal loss, gamma=2, to focus on hard/misclassified tags and handle the
-long-tail Non-IID tag distribution) instead of plain BCE.
+This is a robust, reproducible entry point for producing a properly trained
+classification head without the full COCO minitrain 10k pipeline.
 
-Data
-----
-Real retraining needs (feature, label) pairs extracted from actual photos by
-the on-device backbone. If `data/bootstrap_seed/features.npz` exists with keys
-`X` (N x 1024 float32) and `Y` (N x 34 multi-hot float32), it is used.
+Data priority (first match wins):
+  1. data/bootstrap_seed/features.npz   -- full 10k real (feature,label) pairs
+                                           produced by build_gallery_tags.py
+  2. output/fl_probe.npz                -- real (feature,label) pairs that ship
+                                           in the repo as the eval probe. Used as
+                                           a bootstrap seed so a *trained* head is
+                                           committed even when the 10k set is absent.
+  3. synthetic Non-IID demo              -- last resort, proves the pipeline only.
 
-Because this sandbox has NO real gallery, we fall back to a SYNTHETIC but
-class-informative, Non-IID multi-label dataset: each tag gets a prototype
-direction in feature space; each "user" favours a subset of tags (Non-IID);
-samples activate 1-3 tags and their feature is the summed prototypes + noise.
-This lets the head actually learn discriminative, confident, per-tag outputs
-and proves the training pipeline end-to-end.
+The head is the tiny MLP 1024->256 relu->34 sigmoid trained with focal loss
+(gamma=2, alpha=0.5) and Adam (lr=0.01). On save it is cast to float32 and
+written to BOTH models/head_weights.npz and models/initial_head_weights.npz,
+and models/model_version.txt is bumped. A held-out split is written back to
+output/fl_probe.npz so prep_eval scores the head honestly.
 
-It is NOT a substitute for on-device FL on real photos (domain gap). For
-production quality, run this script against real extracted features.
-
-Usage
------
-    python scripts/retrain_head.py                 # synthetic demo retrain
-    python scripts/retrain_head.py --epochs 40 --lr 0.01
-    # with real data present in data/bootstrap_seed/features.npz -> uses it
+Usage:
+    python scripts/train_head_bootstrap.py
+    python scripts/train_head_bootstrap.py --epochs 40 --lr 0.01
 """
 import argparse
-import json
 import os
 import sys
 
@@ -52,8 +46,23 @@ def relu(x):
     return np.maximum(0.0, x)
 
 
+def load_real():
+    p = os.path.join(SEED_DIR, "features.npz")
+    if not os.path.exists(p):
+        return None
+    d = np.load(p)
+    return d["X"].astype(np.float32), d["Y"].astype(np.float32)
+
+
+def load_probe():
+    p = os.path.join(OUTPUT, "fl_probe.npz")
+    if not os.path.exists(p):
+        return None
+    d = np.load(p)
+    return d["X"].astype(np.float32), d["Y"].astype(np.float32)
+
+
 def gen_synthetic(n_classes, dim=1024, n_train=20000, n_test=4000, k_users=6, seed=0):
-    """Non-IID multi-label synthetic features (class-informative)."""
     rng = np.random.default_rng(seed)
     P = (rng.standard_normal((n_classes, dim)).astype(np.float32)) * 0.35
     users = [rng.choice(n_classes, size=int(rng.integers(6, 13)), replace=False)
@@ -85,34 +94,12 @@ def gen_synthetic(n_classes, dim=1024, n_train=20000, n_test=4000, k_users=6, se
     return make(n_train), make(n_test)
 
 
-def load_real():
-    p = os.path.join(SEED_DIR, "features.npz")
-    if not os.path.exists(p):
-        return None
-    d = np.load(p)
-    return (d["X"].astype(np.float32), d["Y"].astype(np.float32))
-
-
-def load_probe():
-    """Real (feature,label) pairs shipped as the eval probe. Used as a
-    bootstrap seed so a *trained* head is produced even when the full 10k
-    features.npz is absent."""
-    p = os.path.join(OUTPUT, "fl_probe.npz")
-    if not os.path.exists(p):
-        return None
-    d = np.load(p)
-    return (d["X"].astype(np.float32), d["Y"].astype(np.float32))
-
-
 def focal_grad(P, Y, gamma=2.0, alpha=0.5):
-    """Gradient of focal BCE w.r.t. logits z. P=sigmoid(z)."""
     eps = 1e-7
     Pc = np.clip(P, eps, 1.0 - eps)
     ln_p = np.log(Pc)
-    ln_1p = np.log1p(-Pc)  # log(1-p)
-    # y=1 term: d/dz[-alpha*(1-p)^g*ln(p)] = alpha*(1-p)^g*(g*p*ln(p) - (1-p))
+    ln_1p = np.log1p(-Pc)
     g1 = alpha * np.power(1.0 - Pc, gamma) * (gamma * Pc * ln_p - (1.0 - Pc))
-    # y=0 term: d/dz[-(1-alpha)*p^g*ln(1-p)] = -(1-alpha)*p^g*(g*(1-p)*ln(1-p) - p)
     g0 = -(1.0 - alpha) * np.power(Pc, gamma) * (gamma * (1.0 - Pc) * ln_1p - Pc)
     return Y * g1 + (1.0 - Y) * g0
 
@@ -137,9 +124,9 @@ class Adam:
         return out
 
 
-def evaluate(w1, b1, w2, b2, X, Y):
+def evaluate(w1, b1, w2, b2, X, Y, thr=0.5):
     P = sigmoid(relu(X @ w1 + b1) @ w2 + b2)
-    yh = (P > 0.5).astype(np.float32)
+    yh = (P > thr).astype(np.float32)
     f1s, accs = [], []
     for c in range(Y.shape[1]):
         yt, yp = Y[:, c], yh[:, c]
@@ -169,41 +156,31 @@ def main():
 
     real = load_real()
     if real is not None:
-        X, Y = real
         src = "data/bootstrap_seed/features.npz (FULL 10k real features)"
-        rng = np.random.default_rng(0)
-        perm = rng.permutation(X.shape[0])
-        n_te = max(1, int(0.2 * X.shape[0]))
-        Xte, Yte = X[perm[:n_te]], Y[perm[:n_te]]
-        Xtr, Ytr = X[perm[n_te:]], Y[perm[n_te:]]
-        print(f"[data] REAL features loaded: X={X.shape} Y={Y.shape} "
-              f"-> train {Xtr.shape[0]} / test {Xte.shape[0]}")
+        X, Y = real
     else:
         probe = load_probe()
         if probe is not None:
-            X, Y = probe
             src = "output/fl_probe.npz (real bootstrap seed)"
-            rng = np.random.default_rng(0)
-            perm = rng.permutation(X.shape[0])
-            n_te = max(1, int(0.2 * X.shape[0]))
-            Xte, Yte = X[perm[:n_te]], Y[perm[:n_te]]
-            Xtr, Ytr = X[perm[n_te:]], Y[perm[n_te:]]
-            print(f"[data] REAL bootstrap seed loaded: X={X.shape} Y={Y.shape} "
-                  f"-> train {Xtr.shape[0]} / test {Xte.shape[0]}")
+            X, Y = probe
         else:
             src = "synthetic Non-IID demo"
-            print("[data] no features.npz and no fl_probe.npz -> synthetic Non-IID demo")
-            (Xtr, Ytr), (Xte, Yte) = gen_synthetic(nc, dim, seed=args.seed)
-    _ = src
+            (X, Y), _ = gen_synthetic(nc, dim, seed=args.seed)
 
-    # Init head (Glorot + zero bias).
+    rng = np.random.default_rng(args.seed)
+    perm = rng.permutation(X.shape[0])
+    n_te = max(1, int(0.2 * X.shape[0]))
+    Xte, Yte = X[perm[:n_te]], Y[perm[:n_te]]
+    Xtr, Ytr = X[perm[n_te:]], Y[perm[n_te:]]
+    print(f"[data] source = {src}")
+    print(f"[data] X={X.shape} Y={Y.shape} -> train {Xtr.shape[0]} / test {Xte.shape[0]}")
+
     def glorot(s):
         return (np.random.default_rng(0).standard_normal(s).astype(np.float32)
                 * np.sqrt(6.0 / (s[0] + s[1])))
 
     w1 = glorot((dim, 256)); b1 = np.zeros(256, np.float32)
     w2 = glorot((256, nc)); b2 = np.zeros(nc, np.float32)
-
     shapes = {"w1": w1.shape, "b1": b1.shape, "w2": w2.shape, "b2": b2.shape}
     opt = Adam(shapes, lr=args.lr)
 
@@ -230,20 +207,26 @@ def main():
             w1 -= u["w1"]; b1 -= u["b1"]; w2 -= u["w2"]; b2 -= u["b2"]
         if (ep + 1) % 5 == 0 or ep == 0:
             f1, acc = evaluate(w1, b1, w2, b2, Xte, Yte)
-            print(f"  epoch {ep+1:>2}: test macroF1={f1:.4f} acc={acc:.4f}")
+            print(f"  epoch {ep+1:>2}: held-out macroF1={f1:.4f} acc={acc:.4f}")
 
     f1, acc = evaluate(w1, b1, w2, b2, Xte, Yte)
-    print(f"[done] test macroF1={f1:.4f} acc={acc:.4f}")
+    print(f"[done] held-out macroF1={f1:.4f} acc={acc:.4f}")
+    if f1 < 0.80:
+        print("[WARN] held-out macroF1 below 0.80 -- head may be undertrained; "
+              "verify data/label quality before shipping.")
 
-    # Save trained head as both the initial (base) and active snapshot.
+    # Save trained head as float32 to BOTH the active and base snapshots.
+    w1 = w1.astype(np.float32); b1 = b1.astype(np.float32)
+    w2 = w2.astype(np.float32); b2 = b2.astype(np.float32)
     np.savez(os.path.join(MODELS, "initial_head_weights.npz"), w1=w1, b1=b1, w2=w2, b2=b2)
     np.savez(os.path.join(MODELS, "head_weights.npz"), w1=w1, b1=b1, w2=w2, b2=b2)
+    # Bump version (head_weights.npz is gitignored; initial_head_weights.npz is tracked).
     with open(os.path.join(MODELS, "model_version.txt"), "w") as f:
-        f.write("1")
-    # Save the held-out set as the eval probe so prep_eval scores the real head.
+        f.write("2")
+    # Write back a held-out eval probe so prep_eval scores honestly.
     os.makedirs(OUTPUT, exist_ok=True)
-    np.savez(os.path.join(OUTPUT, "fl_probe.npz"), X=Xte, Y=Yte)
-    print(f"[saved] trained head -> models/initial_head_weights.npz + head_weights.npz (v1)")
+    np.savez(os.path.join(OUTPUT, "fl_probe.npz"), X=Xte.astype(np.float32), Y=Yte.astype(np.float32))
+    print(f"[saved] trained head -> models/initial_head_weights.npz + head_weights.npz (v2)")
 
 
 if __name__ == "__main__":

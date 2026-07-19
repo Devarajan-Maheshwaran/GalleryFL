@@ -3,7 +3,7 @@
   "port": 8000,
   "min_clients": 1,
   "max_rounds": 10,
-  "local_epochs": 5,
+  "local_epochs": 8,
   "learning_rate": 0.001,
   "batch_size": 16,
   "mu": 0.01,

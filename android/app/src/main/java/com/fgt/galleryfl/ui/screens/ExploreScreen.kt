@@ -11,6 +11,10 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.AutoMirrored.Filled.ArrowBack
+import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Undo
 import androidx.compose.material3.*
@@ -28,11 +32,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.fgt.galleryfl.data.local.GalleryAlbum
+import com.fgt.galleryfl.data.local.GalleryImage
+import com.fgt.galleryfl.data.local.MediaStateStore
 import com.fgt.galleryfl.ui.components.*
 import com.fgt.galleryfl.ui.theme.FGTColors
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun ExploreScreen(
+    photos: List<GalleryImage>,
     smartAlbums: List<GalleryAlbum>,
     isScanning: Boolean,
     onScanClick: () -> Unit,
@@ -40,11 +49,34 @@ fun ExploreScreen(
     onOrganizeClick: () -> Unit = {},
     onUndoClick: () -> Unit = {},
     canUndo: Boolean = false,
-    modelReady: Boolean = true
+    modelReady: Boolean = true,
+    onImageClick: (GalleryImage) -> Unit = {}
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    // For You utilities: Favorites / Archive / Trash. Selecting one shows that
+    // collection; null shows the AI-generated albums.
+    var mediaView by remember { mutableStateOf<String?>(null) }
+    var mediaImages by remember { mutableStateOf<List<GalleryImage>>(emptyList()) }
+
+    LaunchedEffect(mediaView) {
+        if (mediaView == null) {
+            mediaImages = emptyList()
+            return@LaunchedEffect
+        }
+        val uris = when (mediaView) {
+            "favorites" -> MediaStateStore.getFavorites(context)
+            "archive" -> MediaStateStore.getArchived(context)
+            "trash" -> MediaStateStore.getTrashed(context)
+            else -> emptyList()
+        }
+        val byUri = photos.associateBy { it.uri.toString() }
+        mediaImages = withContext(Dispatchers.IO) { uris.mapNotNull { byUri[it] } }
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         Text(
-            "Explore",
+            "For You",
             style = MaterialTheme.typography.headlineLarge,
             fontWeight = FontWeight.Bold,
             color = FGTColors.TextPrimary,
@@ -73,9 +105,65 @@ fun ExploreScreen(
             }
         }
 
-        val categories = smartAlbums.groupBy { it.folderPath.substringBefore("/") }
-        
-        if (smartAlbums.isEmpty() && !isScanning) {
+        // Favorites / Archive / Trash utilities (formerly the separate Albums tab).
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, bottom = 4.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            ForYouUtilityItem("Favorites", Icons.Default.Favorite, mediaView == "favorites") { mediaView = "favorites" }
+            ForYouUtilityItem("Archive", Icons.Default.Archive, mediaView == "archive") { mediaView = "archive" }
+            ForYouUtilityItem("Trash", Icons.Default.Delete, mediaView == "trash") { mediaView = "trash" }
+        }
+
+        if (mediaView != null) {
+            // Dedicated collection view for the chosen utility.
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+            ) {
+                IconButton(onClick = { mediaView = null }) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = FGTColors.TextPrimary)
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    mediaView!!.replaceFirstChar { it.uppercase() },
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = FGTColors.TextPrimary
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("${mediaImages.size}", style = MaterialTheme.typography.bodyMedium, color = FGTColors.TextSecondary)
+            }
+            if (mediaImages.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("Nothing here yet", color = FGTColors.TextSecondary, textAlign = TextAlign.Center)
+                }
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(3),
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+                    contentPadding = PaddingValues(vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(mediaImages) { img ->
+                        AsyncImage(
+                            model = img.uri,
+                            contentDescription = null,
+                            modifier = Modifier
+                                .aspectRatio(1f)
+                                .clip(RoundedCornerShape(14.dp))
+                                .clickable { onImageClick(img) },
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+                }
+            }
+        } else if (smartAlbums.isEmpty() && !isScanning) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 GlassContainer(
                     modifier = Modifier.widthIn(max = 320.dp).padding(24.dp),
@@ -106,7 +194,7 @@ fun ExploreScreen(
                 // Category Highlights
                 item {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        items(categories.keys.toList()) { category ->
+                        items(smartAlbums.groupBy { it.folderPath.substringBefore("/") }.keys.toList()) { category ->
                             GlassContainer(
                                 modifier = Modifier.clickable { /* Filter logic in main */ },
                                 cornerRadius = 20.dp,
@@ -125,7 +213,7 @@ fun ExploreScreen(
                     }
                 }
 
-                categories.forEach { (cat, albums) ->
+                smartAlbums.groupBy { it.folderPath.substringBefore("/") }.forEach { (cat, albums) ->
                     item {
                         Text(cat, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = FGTColors.TextPrimary)
                         Spacer(Modifier.height(12.dp))
@@ -144,6 +232,22 @@ fun ExploreScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ForYouUtilityItem(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, selected: Boolean, onClick: () -> Unit) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .clip(RoundedCornerShape(16.dp))
+            .clickable { onClick() }
+            .background(if (selected) FGTColors.AccentPrimary.copy(alpha = 0.1f) else FGTColors.BgSurface2)
+            .padding(horizontal = 18.dp, vertical = 10.dp)
+    ) {
+        Icon(icon, contentDescription = label, tint = if (selected) FGTColors.AccentPrimary else FGTColors.TextPrimary, modifier = Modifier.size(24.dp))
+        Spacer(Modifier.height(6.dp))
+        Text(label, style = MaterialTheme.typography.labelSmall, color = FGTColors.TextPrimary)
     }
 }
 

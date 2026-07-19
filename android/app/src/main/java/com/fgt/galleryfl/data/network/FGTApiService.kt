@@ -27,12 +27,22 @@ interface FGTApiService {
     @GET("api/training/status")
     suspend fun getTrainingStatus(): TrainingStatusResponse
 
+    @GET("api/model/status")
+    suspend fun getModelStatus(): ModelStatusResponse
+
     @POST("api/taxonomy/signal")
     suspend fun postTagSignal(
         @Header("X-FGT-Token") token: String,
         @Body request: TagSignalRequest
     ): TagSignalResponse
 }
+
+data class ModelStatusResponse(
+    val loaded: Boolean,
+    val model_version: Int,
+    val head_present: Boolean,
+    val min_clients: Int
+)
 
 data class RegisterRequest(
     val device_model: String,
