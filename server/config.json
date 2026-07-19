@@ -12,7 +12,7 @@
   "dp_delta": 1e-05,
   "max_grad_norm": 50.0,
   "convergence_threshold": 0.001,
-  "server_token": "2c79bdfe",
+  "server_token": "P54RCJHM",
   "model_path": "models/base_model.tflite",
   "validation_dir": "validation_data/",
   "output_dir": "output/"
