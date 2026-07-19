@@ -50,16 +50,24 @@ import java.util.concurrent.TimeUnit
 private data class ConnectionDetails(val serverUrl: String, val token: String)
 
 private fun parseConnectionDetails(input: String, fallbackUrl: String): ConnectionDetails {
-    val parts = input.trim().split("@", limit = 2)
-    val endpoint = parts.firstOrNull().orEmpty().trim()
-    val token = parts.getOrNull(1)?.trim().orEmpty()
-    val url = when {
-        endpoint.isBlank() -> fallbackUrl
-        endpoint.startsWith("http://") || endpoint.startsWith("https://") -> endpoint.removeSuffix("/")
-        else -> "http://${endpoint.removeSuffix("/")}"
+    val trimmed = input.trim()
+    // Support new simple UX: pure 8-char token (server URL from prefs/default)
+    // or legacy "IP:PORT@TOKEN" for compatibility
+    val atIdx = trimmed.indexOf('@')
+    return if (atIdx > 0) {
+        val endpoint = trimmed.substring(0, atIdx).trim()
+        val token = trimmed.substring(atIdx + 1).trim()
+        val url = when {
+            endpoint.isBlank() -> fallbackUrl
+            endpoint.startsWith("http://") || endpoint.startsWith("https://") -> endpoint.removeSuffix("/")
+            else -> "http://${endpoint.removeSuffix("/")}"
+        }
+        ConnectionDetails(url, token)
+    } else {
+        // pure token case
+        val token = trimmed.uppercase()
+        ConnectionDetails(fallbackUrl, token)
     }
-    require(token.isNotBlank()) { "Enter the server as IP:PORT@ACCESS_CODE" }
-    return ConnectionDetails(url, token)
 }
 
 class MainActivity : ComponentActivity() {
@@ -105,35 +113,74 @@ fun MainScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    // === PERSISTED STATE (hoisted early so remember initializers can use them) ===
+    // This is the core "internal memory" for FL connection + model + outputs.
+    val prefs = context.getSharedPreferences("fgt_prefs", Context.MODE_PRIVATE)
+    val savedServerUrl = prefs.getString("last_server_url", defaultServerUrl) ?: defaultServerUrl
+    val savedToken = prefs.getString("last_access_token", "") ?: ""
+    val savedRegisteredId = prefs.getString("last_registered_client_id", null)
+
+    // Backward compat
+    val savedCode = remember {
+        if (savedToken.isNotBlank()) savedToken else (prefs.getString("last_access_code", "") ?: "")
+    }
+
     var selectedTab by remember { mutableIntStateOf(0) }
     var showFLDialog by remember { mutableStateOf(false) }
     var selectedImage by remember { mutableStateOf<GalleryImage?>(null) }
     var searchQuery by remember { mutableStateOf("") }
 
-    // FL State
-    var currentServerUrl by remember { mutableStateOf(defaultServerUrl) }
-    var accessCode by remember { mutableStateOf("fgt-pass") }
-    var activeWeights by remember { mutableStateOf<List<FloatArray>?>(null) }
+    // FL State - initialized from persisted internal memory so connection + model survive simple exit
+    var currentServerUrl by remember { mutableStateOf(savedServerUrl) }
+    var accessCode by remember { mutableStateOf(savedToken.ifBlank { "fgt-pass" }) }
+
+    // === CRITICAL INTERNAL MEMORY: Load from disk at composition time ===
+    // This is the fix for "model and output lost when simply exiting the app".
+    // We eagerly restore the model (activeWeights) and will restore albums as soon
+    // as photos are available. These values come from disk, not just remember{}.
+    val initialWeights = remember {
+        try {
+            val w = ModelStateStore.loadWeights(context)
+            if (w != null && w.size == 4) {
+                android.util.Log.d("FGT_Persist", "RESTORE initialWeights (composition): layers=${w.size}")
+                w
+            } else null
+        } catch (e: Exception) {
+            android.util.Log.d("FGT_Persist", "RESTORE initialWeights failed: ${e.message}")
+            null
+        }
+    }
+    val initialVersion = remember {
+        try { ModelStateStore.loadModelVersion(context) } catch (_: Exception) { 0 }
+    }
+
+    var activeWeights by remember { mutableStateOf<List<FloatArray>?>(initialWeights) }
+    var currentModelVersion by remember { mutableIntStateOf(initialVersion) }
+
     var statusText by remember { mutableStateOf("Ready to sync") }
     var isConnected by remember { mutableStateOf(false) }
     var isTraining by remember { mutableStateOf(false) }
     var currentRound by remember { mutableIntStateOf(0) }
-    var currentModelVersion by remember { mutableIntStateOf(0) }
-    var registeredClientId by remember { mutableStateOf<String?>(null) }
+    var registeredClientId by remember { mutableStateOf<String?>(savedRegisteredId) }
 
     // Photos State
     var photos by remember { mutableStateOf<List<GalleryImage>>(emptyList()) }
+
+    // === CRITICAL INTERNAL MEMORY: smartAlbums (Scan & Group "output") ===
+    // The reported problem: once Scan produces output (smartAlbums) or the model loads,
+    // everything disappears on normal app exit.
+    //
+    // Strategy (multiple redundant restores from persistent storage):
+    // - Model: loaded at composition time via remember { ModelStateStore... }
+    // - Albums (the "output"): restored unconditionally from Room (ScanResultDao)
+    //   as soon as photos are available (permission block + LaunchedEffects).
+    // - The DB + ModelStateStore are the real "internal memory".
     var smartAlbums by remember { mutableStateOf<List<GalleryAlbum>>(emptyList()) }
     var isScanning by remember { mutableStateOf(false) }
 
     // Organize / Undo state
     var isOrganizing by remember { mutableStateOf(false) }
     var canUndoOrganize by remember { mutableStateOf(false) }
-
-    // Remembered coordinator access code for smoother reconnect.
-    val savedCode = remember {
-        context.getSharedPreferences("fgt_prefs", Context.MODE_PRIVATE).getString("last_access_code", "") ?: ""
-    }
 
     val filteredPhotos by remember {
         derivedStateOf {
@@ -176,14 +223,50 @@ fun MainScreen(
         }
     }
 
-    // Initial Load — also hide trashed images (soft-delete via Trash).
+    // === INITIAL LOAD + AGGRESSIVE INTERNAL MEMORY RESTORE ===
+    // This block is the main defense against "everything lost on simple app exit".
+    // We load photos, then immediately hydrate BOTH the model and the Scan output (smartAlbums)
+    // from their persistent stores (ModelStateStore + Room).
     LaunchedEffect(hasPermission) {
         if (hasPermission) {
             val all = GalleryRepository(context).fetchRecentImages(limit = 500)
             val trashed = try {
                 withContext(Dispatchers.IO) { MediaStateStore.getTrashed(context).toSet() }
             } catch (_: Exception) { emptySet() }
-            photos = if (trashed.isEmpty()) all else all.filter { it.uri.toString() !in trashed }
+            val loadedPhotos = if (trashed.isEmpty()) all else all.filter { it.uri.toString() !in trashed }
+            photos = loadedPhotos
+
+            // 1. Always attempt to restore the model (weights + version) from disk.
+            // This is critical "internal memory" — the loaded classification head must
+            // survive a normal app exit.
+            try {
+                val w = ModelStateStore.loadWeights(context)
+                if (w != null && w.size == 4) {
+                    activeWeights = w
+                    currentModelVersion = ModelStateStore.loadModelVersion(context)
+                    android.util.Log.d("FGT_Persist", "RESTORE model from disk (permission): v=$currentModelVersion, layers=${w.size}")
+                }
+            } catch (e: Exception) {
+                android.util.Log.d("FGT_Persist", "RESTORE model failed: ${e.message}")
+            }
+
+            // 2. Force-restore Scan & Group "output" (smartAlbums) from Room.
+            // This is the PRIMARY fix for the bug:
+            // "once the app gives an output, it is all lost when the app is simply exited".
+            //
+            // We ALWAYS restore from the persistent DB (Room / ScanResultDao)
+            // as soon as photos are available. We assign unconditionally (even if
+            // the list is empty). The DB is the single source of truth for albums
+            // and survives normal app exit / process death.
+            if (loadedPhotos.isNotEmpty()) {
+                try {
+                    val restoredAlbums = restoreScanResults(context, loadedPhotos)
+                    smartAlbums = restoredAlbums   // persisted truth (unconditional)
+                    android.util.Log.d("FGT_Persist", "RESTORE smartAlbums (permission): ${restoredAlbums.size} albums")
+                } catch (e: Exception) {
+                    android.util.Log.d("FGT_Persist", "RESTORE smartAlbums failed: ${e.message}")
+                }
+            }
         }
     }
 
@@ -194,25 +277,96 @@ fun MainScreen(
         } catch (_: Exception) { /* DB not ready yet */ }
     }
 
-    // Restore the previously synced model so Scan & Group works without an
-    // immediate re-sync after the app is killed and reopened.
-    LaunchedEffect(Unit) {
-        try {
-            val restored = ModelStateStore.loadWeights(context)
-            if (restored != null && restored.size == 4) {
-                activeWeights = restored
-                currentModelVersion = ModelStateStore.loadModelVersion(context)
+    // === DEFENSIVE RE-HYDRATION (internal memory for model + output) ===
+    // These ensure that even after process death or simple exit, the model
+    // and Scan "output" (smartAlbums) are restored from persistent storage.
+
+    LaunchedEffect(isConnected) {
+        if ((activeWeights == null || (activeWeights?.size ?: 0) != 4) && isConnected) {
+            val (w, v) = restoreModelFromDisk(context)
+            if (w != null && w.size == 4) {
+                activeWeights = w
+                currentModelVersion = v
+                android.util.Log.d("FGT_Persist", "RESTORE model (Launched isConnected): v=$v")
             }
-        } catch (_: Exception) { /* ignore */ }
+        }
     }
 
-    // Restore the last Scan & Group results so albums survive app exit.
+    // Unconditional restore of Scan "output" (smartAlbums) — the main thing that was lost on simple exit.
+    // Whenever we have photos, we force-restore from Room (the single source of truth).
+    // We assign the result directly (even if the list is empty) so any stale in-memory
+    // albums are replaced by the real persisted output.
     LaunchedEffect(photos) {
-        if (photos.isNotEmpty() && smartAlbums.isEmpty()) {
-            try {
-                val albums = restoreScanResults(context, photos)
-                if (albums.isNotEmpty()) smartAlbums = albums
-            } catch (_: Exception) { /* ignore */ }
+        if (photos.isNotEmpty()) {
+            val restored = restoreSmartAlbumsFromDisk(context, photos)
+            smartAlbums = restored   // always take persisted truth (unconditional)
+            android.util.Log.d("FGT_Persist", "RESTORE smartAlbums (Launched photos): ${restored.size} albums")
+        }
+    }
+
+    // Combined safety net for model + output.
+    // For albums (the "output"), we always restore from Room — do not guard on isEmpty,
+    // because we want to replace any stale in-memory value with the persisted truth.
+    LaunchedEffect(activeWeights, photos.size) {
+        if (photos.isNotEmpty()) {
+            val restored = restoreSmartAlbumsFromDisk(context, photos)
+            smartAlbums = restored   // always prefer persisted data
+            android.util.Log.d("FGT_Persist", "RESTORE smartAlbums (Launched weights+size): ${restored.size} albums")
+        }
+        if (activeWeights == null || (activeWeights?.size ?: 0) != 4) {
+            val (w, v) = restoreModelFromDisk(context)
+            if (w != null && w.size == 4) {
+                activeWeights = w
+                currentModelVersion = v
+                android.util.Log.d("FGT_Persist", "RESTORE model (Launched weights+size): v=$v")
+            }
+        }
+    }
+
+    // Auto-resume connection/session on launch (phone off / restart).
+    // Persists server URL + token + clientId. Re-registers if needed to avoid 409.
+    LaunchedEffect(Unit) {
+        val p = context.getSharedPreferences("fgt_prefs", Context.MODE_PRIVATE)
+        val persistedUrl = p.getString("last_server_url", null)
+        val persistedToken = p.getString("last_access_token", null)
+        val persistedRegId = p.getString("last_registered_client_id", null)
+        if (!persistedUrl.isNullOrBlank() && !persistedToken.isNullOrBlank()) {
+            currentServerUrl = persistedUrl
+            accessCode = persistedToken
+            registeredClientId = persistedRegId
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val api = RetrofitClient.getApiService(persistedUrl, httpClient)
+                    // Always re-register on resume to ensure server knows us (prevents 409)
+                    val reg = api.register(persistedToken, RegisterRequest(Build.MODEL, "User-${clientId.take(4)}", persistedRegId ?: clientId))
+                    TagSignalSender.configure(api, persistedToken, reg.client_id)
+                    registeredClientId = reg.client_id
+                    p.edit()
+                        .putString("last_registered_client_id", reg.client_id)
+                        .putString("last_access_token", persistedToken)
+                        .putString("last_server_url", persistedUrl)
+                        .apply()
+
+                    val resp = api.getCurrentModel(0)
+                    val sv = resp.headers()["X-Model-Version"]?.toIntOrNull() ?: reg.model_version
+                    val w = WeightSerializer.deserialize(resp.body()?.string() ?: "")
+                    activeWeights = w
+                    currentModelVersion = sv
+                    ModelStateStore.saveWeights(context, w)
+                    ModelStateStore.saveModelVersion(context, sv)
+
+                    withContext(Dispatchers.Main) {
+                        wsClient.connect(persistedUrl, reg.client_id, persistedToken)
+                        isConnected = true
+                        statusText = "Resumed connection"
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        statusText = "Resume failed: ${e.message?.take(60)}"
+                        isConnected = false
+                    }
+                }
+            }
         }
     }
 
@@ -296,8 +450,23 @@ fun MainScreen(
                         maxGradNorm = maxGradNorm, numSamples = featuresList.size
                     )
 
-                    apiService.submitUpdate(accessCode, ClientUpdateRequest(
-                        client_id = registeredClientId ?: error("Client is not registered"),
+                    // Use persisted latest token + re-register guard before submit to avoid 409
+                    val currentPrefs = context.getSharedPreferences("fgt_prefs", Context.MODE_PRIVATE)
+                    val liveToken = currentPrefs.getString("last_access_token", accessCode) ?: accessCode
+                    val liveClientId = registeredClientId ?: currentPrefs.getString("last_registered_client_id", clientId) ?: clientId
+                    try {
+                        val api = RetrofitClient.getApiService(currentServerUrl, httpClient)
+                        // Idempotent re-register on resume path
+                        val reg = api.register(liveToken, RegisterRequest(Build.MODEL, "User-${clientId.take(4)}", liveClientId))
+                        if (reg.client_id != registeredClientId) {
+                            registeredClientId = reg.client_id
+                            currentPrefs.edit().putString("last_registered_client_id", reg.client_id).apply()
+                        }
+                    } catch (_: Exception) { /* best effort */ }
+
+                    val submitToken = currentPrefs.getString("last_access_token", liveToken) ?: liveToken
+                    apiService.submitUpdate(submitToken, ClientUpdateRequest(
+                        client_id = registeredClientId ?: liveClientId,
                         weights = WeightSerializer.serialize(result.updatedWeights),
                         num_samples = result.numSamples,
                         local_loss = result.localLoss,
@@ -583,17 +752,24 @@ fun MainScreen(
             initialCode = savedCode,
             onDismiss = { showFLDialog = false },
             onConnect = { code ->
-                context.getSharedPreferences("fgt_prefs", Context.MODE_PRIVATE)
-                    .edit().putString("last_access_code", code).apply()
                 scope.launch(Dispatchers.IO) {
                     try {
                         val connection = parseConnectionDetails(code, defaultServerUrl)
-                        currentServerUrl = connection.serverUrl
-                        accessCode = connection.token
+                        val tokenOnly = if (code.contains("@")) code.substringAfter("@").trim().uppercase() else code.trim().uppercase()
+                        val url = connection.serverUrl
 
-                        val apiService = RetrofitClient.getApiService(currentServerUrl, httpClient)
-                        val reg = apiService.register(accessCode, RegisterRequest(Build.MODEL, "User-${clientId.take(4)}", clientId))
-                        TagSignalSender.configure(apiService, accessCode, reg.client_id)
+                        val prefs = context.getSharedPreferences("fgt_prefs", Context.MODE_PRIVATE)
+                        prefs.edit()
+                            .putString("last_server_url", url)
+                            .putString("last_access_token", tokenOnly)
+                            .apply()
+
+                        currentServerUrl = url
+                        accessCode = tokenOnly
+
+                        val apiService = RetrofitClient.getApiService(url, httpClient)
+                        val reg = apiService.register(tokenOnly, RegisterRequest(Build.MODEL, "User-${clientId.take(4)}", clientId))
+                        TagSignalSender.configure(apiService, tokenOnly, reg.client_id)
                         
                         val response = apiService.getCurrentModel(0)
                         val serverVersion = response.headers()["X-Model-Version"]?.toIntOrNull() ?: reg.model_version
@@ -602,8 +778,12 @@ fun MainScreen(
                         ModelStateStore.saveWeights(context, activeWeights!!)
                         ModelStateStore.saveModelVersion(context, serverVersion)
 
+                        prefs.edit()
+                            .putString("last_registered_client_id", reg.client_id)
+                            .apply()
+
                         withContext(Dispatchers.Main) {
-                            wsClient.connect(currentServerUrl, reg.client_id, accessCode)
+                            wsClient.connect(url, reg.client_id, tokenOnly)
                             registeredClientId = reg.client_id
                             statusText = "Opening secure connection..."
                         }
@@ -681,9 +861,8 @@ fun PhotosTopBar(
 }
 
 /**
- * Rebuild the persisted Scan & Group albums from [ScanResultEntity] rows,
- * resolving each stored URI back to its [GalleryImage] from the current
- * gallery. Called on launch so results survive app exit.
+ * Rebuild the persisted Scan & Group albums from [ScanResultEntity] rows.
+ * This is the "output" that must survive simple app exit.
  */
 private suspend fun restoreScanResults(
     context: Context,
@@ -707,6 +886,40 @@ private suspend fun restoreScanResults(
                 localPersonalizationAffected = false
             )
         }
+}
+
+/**
+ * Restore the classification head (activeWeights) from disk.
+ * This is the primary "internal memory" for the loaded model.
+ * Called from multiple LaunchedEffects so the model is never lost on simple exit.
+ */
+private suspend fun restoreModelFromDisk(context: Context): Pair<List<FloatArray>?, Int> {
+    return try {
+        val weights = ModelStateStore.loadWeights(context)
+        val version = ModelStateStore.loadModelVersion(context)
+        if (weights != null && weights.size == 4) {
+            Pair(weights, version)
+        } else {
+            Pair(null, 0)
+        }
+    } catch (_: Exception) {
+        Pair(null, 0)
+    }
+}
+
+/**
+ * Restore smart albums ("output") from Room DB.
+ * Unconditionally hydrates from persisted scan results whenever photos are present.
+ */
+private suspend fun restoreSmartAlbumsFromDisk(
+    context: Context,
+    photos: List<GalleryImage>
+): List<GalleryAlbum> {
+    return try {
+        restoreScanResults(context, photos)
+    } catch (_: Exception) {
+        emptyList()
+    }
 }
 
 @Composable
@@ -776,17 +989,22 @@ fun FLSyncDialog(
 
     fun tryConnect() {
         val code = codeInput.trim()
-        val parts = code.split("@")
-        if (code.isBlank() || parts.size != 2 || parts[0].isBlank() || parts[1].isBlank()) {
-            codeError = "Use the format IP:PORT@ACCESS_CODE"
+        if (code.isBlank()) {
+            codeError = "Enter the 8-character access token"
             return
         }
-        if (!AccessCodeGenerator.isValid(parts[1].uppercase())) {
-            codeError = "Access code must be 8 characters (A-Z and 2-9, no 0/O/1/I/L)."
+        // Accept pure 8-char token OR legacy IP@TOKEN (extract token)
+        val token = if (code.contains("@")) {
+            code.substringAfter("@").trim().uppercase()
+        } else {
+            code.uppercase()
+        }
+        if (!AccessCodeGenerator.isValid(token)) {
+            codeError = "Access token must be 8 characters (A-Z 2-9, no 0/O/1/I/L)."
             return
         }
         codeError = null
-        onConnect(code)
+        onConnect(code)  // pass original input (parse handles both)
     }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -815,7 +1033,7 @@ fun FLSyncDialog(
                 }
                 Spacer(Modifier.height(16.dp))
                 Text(
-                    if (isConnected) statusText else "Enter your coordinator access code to sync the model. Your photos never leave this device.",
+                    if (isConnected) statusText else "Enter the 8-character server access token to sync the model. Your photos never leave this device.",
                     style = MaterialTheme.typography.bodyMedium, color = FGTColors.TextSecondary
                 )
                 if (isTraining) {
@@ -827,25 +1045,24 @@ fun FLSyncDialog(
                     OutlinedTextField(
                         value = codeInput,
                         onValueChange = { codeInput = it; codeError = null },
-                        label = { Text("Coordinator Access Code") },
-                        placeholder = { Text("IP:PORT@ACCESS_CODE") },
+                        label = { Text("Access Token (8 chars)") },
+                        placeholder = { Text("e.g. P54RCJHM") },
                         isError = codeError != null,
                         supportingText = codeError?.let { { Text(it, color = FGTColors.Error) } }
                             ?: {
                                 Text(
-                                    "8-character code (letters + digits). Tap the icon to generate one.",
+                                    "8-character alphanumeric token from server dashboard.",
                                     color = FGTColors.TextSecondary
                                 )
                             },
                         trailingIcon = {
                             IconButton(onClick = {
-                                val p = codeInput.split("@")
-                                codeInput = if (p.size == 2) "${p[0]}@${AccessCodeGenerator.generate()}" else AccessCodeGenerator.generate()
+                                codeInput = AccessCodeGenerator.generate()
                                 codeError = null
                             }) {
                                 Icon(
                                     Icons.Default.Refresh,
-                                    contentDescription = "Generate access code",
+                                    contentDescription = "Generate access token",
                                     tint = FGTColors.AccentPrimary
                                 )
                             }

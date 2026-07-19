@@ -266,7 +266,8 @@ async function refreshStatus() {
     document.getElementById('param-count').innerText = fmt(d.total_parameters);
     document.getElementById('round-num').innerText = d.current_round;
     if (accessCodeValue !== d.access_code) { accessCodeValue = d.access_code || ''; renderCode(); }
-    if (d.access_code && d.access_code.includes('@')) document.getElementById('lan-ip').innerText = d.access_code.split('@')[0];
+    const addr = d.server_address || (d.access_code && d.access_code.includes('@') ? d.access_code.split('@')[0] : null);
+    if (addr) document.getElementById('lan-ip').innerText = addr;
     else document.getElementById('lan-ip').innerText = location.host;
     if (d.online_clients) { clients = {}; d.online_clients.forEach(c => clients[c.client_id] = c); renderClients(); }
   } catch (e) { toast('Status update failed', 'error'); }
@@ -392,15 +393,21 @@ async function stopTraining() {
 function renderCode() {
   const el = document.getElementById('access-code');
   if (!accessCodeValue) { el.textContent = '—'; el.classList.add('masked'); return; }
-  if (codeVisible) { el.textContent = accessCodeValue; el.classList.remove('masked'); }
-  else { el.textContent = maskCode(accessCodeValue); el.classList.add('masked'); }
+  // Show clean 8-char token when possible (new UX)
+  let display = accessCodeValue;
+  if (accessCodeValue.includes('@')) {
+    const parts = accessCodeValue.split('@');
+    display = parts[1] || accessCodeValue;
+  }
+  if (codeVisible) { el.textContent = display; el.classList.remove('masked'); }
+  else { el.textContent = maskCode(display); el.classList.add('masked'); }
 }
 function maskCode(code) {
   const at = code.indexOf('@');
-  const ip = at >= 0 ? code.slice(0, at) : code;
-  const tok = at >= 0 ? code.slice(at + 1) : '';
+  const ip = at >= 0 ? code.slice(0, at) : '';
+  const tok = at >= 0 ? code.slice(at + 1) : code;
   const shown = tok.length > 6 ? tok.slice(0, 4) + '••••' + tok.slice(-2) : tok;
-  return `${ip}@${shown}`;
+  return ip ? `${ip}@${shown}` : shown;
 }
 async function copyCode() {
   if (!accessCodeValue) return;

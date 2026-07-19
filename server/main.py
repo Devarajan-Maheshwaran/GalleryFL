@@ -268,6 +268,8 @@ async def get_training_status():
         "connected_clients": len(online_list),
         "registered_clients": len(coordinator.registered_clients),
         "access_code": f"{get_lan_ip()}:{config.port}@{config.server_token}",
+        "access_token": config.server_token,
+        "server_address": f"http://{get_lan_ip()}:{config.port}",
         "online_clients": online_list
     }
 
@@ -292,7 +294,7 @@ async def regenerate_token():
             
     await ws_manager.broadcast({"type": "clients_cleared"})
     logging.info(f"Regenerated access token. All old registrations revoked. New FGT Access Code: {config.server_token}")
-    return {"access_code": f"{get_lan_ip()}:{config.port}@{config.server_token}"}
+    return {"access_code": f"{get_lan_ip()}:{config.port}@{config.server_token}", "access_token": config.server_token, "server_address": f"http://{get_lan_ip()}:{config.port}"}
 
 @app.get("/api/metrics/history")
 async def get_metrics_history():
