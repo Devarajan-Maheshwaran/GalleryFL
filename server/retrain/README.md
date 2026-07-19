@@ -1,26 +1,35 @@
-# GalleryFL 7-Parent Retraining (Clean Pipeline)
+# GalleryFL 7-Parent Retraining Pipeline
 
-## 1. Dataset Preparation (for Kaggle coco-minitrain-10k)
+This is the **only supported way** to retrain the model after the cleanup.
 
-The Kaggle dataset has this exact structure:
+## Dataset: Kaggle coco-minitrain-10k
+
+The dataset from Kaggle has this structure:
 
 ```
 coco_minitrain_10k/
 ├── images/
-│   ├── train2017/
+│   ├── train2017/   ← jpg files
 │   └── val2017/
 ├── labels/
-│   ├── train2017/
+│   ├── train2017/   ← .txt files (YOLO format)
 │   └── val2017/
 ├── train2017.txt
 └── val2017.txt
 ```
 
-**Convert it to the 7-parent format** (required by the trainer):
+## Step-by-step: Pull → Convert → Train → Evaluate
+
+### 1. Pull the latest code
 
 ```bash
-# From the GalleryFL root
-cd server/retrain
+git pull origin main
+```
+
+### 2. Convert COCO to 7-parent structure
+
+```bash
+cd GalleryFL/server/retrain
 
 python convert_coco.py \
     --coco_root /path/to/coco_minitrain_10k \
@@ -29,11 +38,11 @@ python convert_coco.py \
     --splits train2017,val2017
 ```
 
-**Recommended for first training run:**
-- Use `--max-per-class 250` or `300` (much faster)
-- Use `--use-symlinks` if you are on the same filesystem (very fast, no copying)
+**Recommended flags:**
+- `--max-per-class 250` or `300` → much faster first training
+- `--use-symlinks` → use if on same drive (very fast, no disk copy)
 
-After conversion you will have:
+After this step you will have:
 
 ```
 ~/data/gallery_7tag/
@@ -46,51 +55,57 @@ After conversion you will have:
 └── events/
 ```
 
-## 2. Train the 7-Parent Model
-
-```bash
-export DATASET_DIR=~/data/gallery_7tag
-
-cd server/retrain
-
-# 1. Create proper train/val splits
-python prepare_dataset.py --dataset-dir $DATASET_DIR
-
-# 2. Train (selects best model by macro F1)
-python train.py --dataset-dir $DATASET_DIR --epochs 20
-
-# 3. Evaluate with per-class metrics
-python evaluate.py \
-    --checkpoint ../output/retrain/best_checkpoint.npz \
-    --tune-thresholds
-
-# 4. Export final production model (head_weights.npz)
-python export_model.py
-```
-
-## 3. What You Get
-
-- `server/models/head_weights.npz` ← **The model you use**
-- `server/output/retrain/retrain_metrics.json`
-- `server/models/model_version.txt`
-
-## Full One-Liner Example
+### 3. Train the model
 
 ```bash
 export DATASET_DIR=~/data/gallery_7tag
 
 cd GalleryFL/server/retrain
 
+# Create train/val splits
+python prepare_dataset.py --dataset-dir $DATASET_DIR
+
+# Train (uses macro F1 for best checkpoint)
+python train.py --dataset-dir $DATASET_DIR --epochs 20
+
+# Evaluate with full metrics + threshold tuning
+python evaluate.py \
+    --checkpoint ../output/retrain/best_checkpoint.npz \
+    --tune-thresholds
+
+# Export the final model (this is what the app + server use)
+python export_model.py
+```
+
+## Complete One-Liner Flow (copy-paste)
+
+```bash
+# 1. Set your paths
+export COCO_ROOT=/path/to/coco_minitrain_10k
+export DATASET_DIR=~/data/gallery_7tag
+
+cd GalleryFL/server/retrain
+
+# 2. Convert
 python convert_coco.py \
-    --coco_root ~/data/coco_minitrain_10k \
+    --coco_root $COCO_ROOT \
     --output $DATASET_DIR \
     --max-per-class 250
 
+# 3. Train + eval + export
 python prepare_dataset.py --dataset-dir $DATASET_DIR
 python train.py --dataset-dir $DATASET_DIR --epochs 15
 python evaluate.py --checkpoint ../output/retrain/best_checkpoint.npz --tune-thresholds
 python export_model.py
 ```
+
+## Final Artifacts
+
+After `export_model.py` you get:
+
+- `server/models/head_weights.npz` ← **Use this model**
+- `server/output/retrain/retrain_metrics.json` (contains macro F1 + per-class scores)
+- `server/models/model_version.txt`
 
 ## Requirements
 
@@ -100,6 +115,8 @@ pip install numpy tensorflow-cpu pillow
 
 ## Notes
 
-- The converter uses majority-vote on YOLO labels to assign each image to one of the 7 parents.
-- `documents` and `events` will be very small from COCO (this is expected).
-- Real quality for those classes will come later from on-device FL + user photos.
+- `documents` and `events` will have very few images from COCO (expected).
+- You will get good results on **people, places, activities, objects, nature**.
+- Later real user photos + Federated Learning will improve the weaker classes.
+
+This pipeline replaces all the old 34-class broken training code.
