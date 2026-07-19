@@ -37,6 +37,8 @@ class FeatureExtractor(private val context: Context) {
         order(ByteOrder.nativeOrder())
     }
 
+    private var outputCount = 0
+
     init {
         val options = Interpreter.Options()
         try {
@@ -47,7 +49,10 @@ class FeatureExtractor(private val context: Context) {
         }
 
         val modelBuffer = loadModelFile("models/base_model.tflite")
-        interpreter = Interpreter(modelBuffer, options)
+        val interp = Interpreter(modelBuffer, options)
+        interpreter = interp
+        outputCount = interp.outputTensorCount
+        android.util.Log.d("FeatureExtractor", "Model loaded with $outputCount outputs")
     }
 
     private fun loadModelFile(fileName: String): ByteBuffer {
@@ -71,21 +76,27 @@ class FeatureExtractor(private val context: Context) {
             inputBuffer.putFloat(((pixel and 0xFF) / 127.5f) - 1f)
         }
 
-        outputBufferSpatial.rewind()
-        outputBufferProj.rewind()
-        
-        // TF Lite outputs are mapped by index. 
-        // Index 0: spatial map, Index 1: projection (based on outputs=[base_model.output, projection])
-        val outputs = mapOf(
-            0 to outputBufferSpatial,
-            1 to outputBufferProj
-        )
+        val outputs = mutableMapOf<Int, Any>()
+        if (outputCount >= 2) {
+            outputBufferSpatial.rewind()
+            outputBufferProj.rewind()
+            outputs[0] = outputBufferSpatial
+            outputs[1] = outputBufferProj
+        } else {
+            outputBufferProj.rewind()
+            outputs[0] = outputBufferProj
+        }
         
         interpreter?.runForMultipleInputsOutputs(arrayOf(inputBuffer), outputs)
 
-        outputBufferSpatial.rewind()
-        val spatialFeatures = FloatArray(SPATIAL_SIZE)
-        outputBufferSpatial.asFloatBuffer().get(spatialFeatures)
+        val spatialFeatures = if (outputCount >= 2) {
+            outputBufferSpatial.rewind()
+            val arr = FloatArray(SPATIAL_SIZE)
+            outputBufferSpatial.asFloatBuffer().get(arr)
+            arr
+        } else {
+            FloatArray(SPATIAL_SIZE) // Return zeros if not supported by model
+        }
         
         outputBufferProj.rewind()
         val projectionFeatures = FloatArray(FEATURE_SIZE)

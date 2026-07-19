@@ -34,6 +34,7 @@ class FGTWebSocketClient(private val client: OkHttpClient) {
         retryAttempt = 0
         connection = Connection(serverUrl, clientId, token)
         reconnectJob?.cancel()
+        webSocket?.close(1000, "Reconnecting")
         openConnection()
     }
 

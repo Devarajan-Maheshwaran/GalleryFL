@@ -372,9 +372,14 @@ fun MainScreen(
                                         withContext(Dispatchers.Main) {
                                             smartAlbums = finalAlbums
                                             isScanning = false
+                                            statusText = "Scan complete: ${finalAlbums.size} groups found"
                                         }
                                     } catch (e: Exception) {
-                                        withContext(Dispatchers.Main) { isScanning = false }
+                                        android.util.Log.e("ScanLogic", "Scanning failed", e)
+                                        withContext(Dispatchers.Main) { 
+                                            isScanning = false 
+                                            statusText = "Scan failed: ${e.localizedMessage}"
+                                        }
                                     }
                                 }
                             },
@@ -427,7 +432,7 @@ fun MainScreen(
                         accessCode = connection.token
 
                         val apiService = RetrofitClient.getApiService(currentServerUrl, httpClient)
-                        val reg = apiService.register(accessCode, RegisterRequest(Build.MODEL, "User-${clientId.take(4)}"))
+                        val reg = apiService.register(accessCode, RegisterRequest(Build.MODEL, "User-${clientId.take(4)}", clientId))
                         
                         val response = apiService.getCurrentModel(0)
                         val serverVersion = response.headers()["X-Model-Version"]?.toIntOrNull() ?: reg.model_version

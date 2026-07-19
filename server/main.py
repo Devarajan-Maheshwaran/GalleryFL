@@ -8,6 +8,7 @@ import uvicorn
 import logging
 import os
 import uuid
+import secrets
 import numpy as np
 import socket
 import base64
@@ -133,6 +134,7 @@ async def startup_event():
 class RegisterRequest(BaseModel):
     device_model: str
     nickname: str
+    client_id: Optional[str] = None
 
 class ClientUpdateRequest(BaseModel):
     client_id: str
@@ -149,7 +151,7 @@ async def verify_token(x_fgt_token: Optional[str] = Header(None)):
 
 @app.post("/api/register", dependencies=[Depends(verify_token)])
 async def register_client(req: RegisterRequest):
-    client_id = str(uuid.uuid4())
+    client_id = req.client_id if req.client_id else str(uuid.uuid4())
     coordinator.register_client(client_id, req.model_dump())
     audit_log.log("client_registered", {"client_id": client_id, "nickname": req.nickname})
     await ws_manager.broadcast({"type": "client_connected", "data": {"client_id": client_id, "nickname": req.nickname, "device_model": req.device_model}})
@@ -239,7 +241,7 @@ async def get_training_status():
 
 @app.post("/api/training/regenerate-token")
 async def regenerate_token():
-    config.server_token = str(uuid.uuid4().hex[:8])
+    config.server_token = secrets.token_hex(4)
     config.save()
     
     # Revoke registrations

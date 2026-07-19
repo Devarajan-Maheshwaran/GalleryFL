@@ -30,7 +30,8 @@ interface FGTApiService {
 
 data class RegisterRequest(
     val device_model: String,
-    val nickname: String
+    val nickname: String,
+    val client_id: String? = null
 )
 
 data class RegisterResponse(

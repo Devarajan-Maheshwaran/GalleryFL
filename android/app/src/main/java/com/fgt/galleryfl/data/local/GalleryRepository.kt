@@ -51,10 +51,11 @@ class GalleryRepository(private val context: Context) {
         val projection = arrayOf(
             MediaStore.Images.Media._ID,
             MediaStore.Images.Media.DISPLAY_NAME,
+            MediaStore.Images.Media.DATE_TAKEN,
             MediaStore.Images.Media.DATE_ADDED
         )
         
-        val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
+        val sortOrder = "${MediaStore.Images.Media.DATE_TAKEN} DESC, ${MediaStore.Images.Media.DATE_ADDED} DESC"
         
         context.contentResolver.query(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
@@ -65,19 +66,24 @@ class GalleryRepository(private val context: Context) {
         )?.use { cursor ->
             val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
             val nameColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
-            val dateColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
+            val dateTakenColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_TAKEN)
+            val dateAddedColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
             
             while (cursor.moveToNext() && images.size < limit) {
                 val id = cursor.getLong(idColumn)
                 val name = cursor.getString(nameColumn)
-                val date = cursor.getLong(dateColumn)
+                val dateTaken = cursor.getLong(dateTakenColumn)
+                val dateAdded = cursor.getLong(dateAddedColumn)
+                
+                // dateTaken is in ms, dateAdded is in seconds
+                val effectiveDate = if (dateTaken > 0) dateTaken / 1000 else dateAdded
                 
                 val uri = Uri.withAppendedPath(
                     MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
                     id.toString()
                 )
                 
-                images.add(GalleryImage(id, uri, name, date))
+                images.add(GalleryImage(id, uri, name, effectiveDate))
             }
         }
         images.sortedByDescending { it.dateAdded }
