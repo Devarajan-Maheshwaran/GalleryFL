@@ -1,24 +1,29 @@
 """
-Central configuration for the clean 7-parent GalleryFL retraining pipeline.
+config.py - Clean configuration for 7-parent GalleryFL retraining.
 
-Usage:
-    export DATASET_DIR=/path/to/your/7tag/gallery
-    python -m server.retrain.train --config server/retrain/config.py
-
-Or override via CLI / env.
+Single source of truth for dataset and training.
 """
 
 import os
 from dataclasses import dataclass
 from typing import List
 
-# === SINGLE SOURCE OF TRUTH FOR DATASET ===
-# Set this via environment or CLI. Example:
-#   export DATASET_DIR=/home/user/my_photos/7tag
-#   DATASET_DIR must contain 7 subfolders named exactly after the labels below.
-DATASET_DIR = os.environ.get("DATASET_DIR", os.path.join(os.path.dirname(__file__), "..", "..", "data", "gallery_7tag"))
+# === DATASET CONFIG (set via env or CLI) ===
+# Expected structure after conversion:
+# DATASET_DIR/
+#   people/ *.jpg
+#   places/
+#   activities/
+#   objects/
+#   documents/
+#   nature/
+#   events/
+DATASET_DIR = os.environ.get(
+    "DATASET_DIR",
+    os.path.join(os.path.dirname(__file__), "..", "..", "data", "gallery_7tag")
+)
 
-# 7 CORE PARENT CATEGORIES (the only labels we train on)
+# 7 PARENT CATEGORIES (single-label classification target)
 LABELS: List[str] = [
     "people",
     "places",
@@ -29,67 +34,58 @@ LABELS: List[str] = [
     "events",
 ]
 NUM_CLASSES: int = len(LABELS)
-LABEL_TO_IDX = {label: i for i, label in enumerate(LABELS)}
-IDX_TO_LABEL = {i: label for i, label in enumerate(LABELS)}
+LABEL_TO_IDX = {name: i for i, name in enumerate(LABELS)}
+IDX_TO_LABEL = {i: name for i, name in enumerate(LABELS)}
 
-# Splits
+# Training splits
 TRAIN_SPLIT = 0.70
 VAL_SPLIT = 0.15
 TEST_SPLIT = 0.15
 
-# Training hyperparams (tuned for macro-F1 on small/medium gallery sets)
+# Model / Training hyperparams
 BATCH_SIZE = 32
-EPOCHS = 40
+EPOCHS = 100
 LEARNING_RATE = 1e-3
-DROPOUT = 0.3
+DROPOUT = 0.4
 HIDDEN_SIZE = 256
+LABEL_SMOOTHING = 0.1
+WEIGHT_DECAY = 1e-4
 
-# Class balancing
-USE_CLASS_WEIGHTS = True
-
-# Threshold tuning (per-class or global)
-TUNE_THRESHOLDS = True
-DEFAULT_THRESHOLD = 0.5
-
-# Paths (relative to server/)
-MODELS_DIR = os.path.join(os.path.dirname(__file__), "..", "models")
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "output")
-RETRAIN_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "retrain")
-
-# Final artifacts
-HEAD_WEIGHTS_PATH = os.path.join(MODELS_DIR, "head_weights.npz")
-BEST_CHECKPOINT = os.path.join(RETRAIN_OUTPUT_DIR, "best_checkpoint.npz")
-METRICS_REPORT = os.path.join(RETRAIN_OUTPUT_DIR, "retrain_metrics.json")
-MODEL_VERSION_FILE = os.path.join(MODELS_DIR, "model_version.txt")
-
-# Backbone (must exist)
-BACKBONE_PATH = os.path.join(MODELS_DIR, "base_model.tflite")
+# Backbone (must be present)
+BACKBONE_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "base_model.tflite")
 IMAGE_SIZE = 224
 FEATURE_DIM = 1024
+
+# Output paths
+MODELS_DIR = os.path.join(os.path.dirname(__file__), "..", "models")
+OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "output")
+RETRAIN_DIR = os.path.join(OUTPUT_DIR, "retrain")
+
+HEAD_WEIGHTS_PATH = os.path.join(MODELS_DIR, "head_weights.npz")
+BEST_CHECKPOINT = os.path.join(RETRAIN_DIR, "best_checkpoint.npz")
+METRICS_PATH = os.path.join(RETRAIN_DIR, "retrain_metrics.json")
+THRESHOLDS_PATH = os.path.join(RETRAIN_DIR, "thresholds.json")
+MODEL_VERSION_FILE = os.path.join(MODELS_DIR, "model_version.txt")
 
 @dataclass
 class RetrainConfig:
     dataset_dir: str = DATASET_DIR
     labels: List[str] = None
     num_classes: int = NUM_CLASSES
-    train_split: float = TRAIN_SPLIT
-    val_split: float = VAL_SPLIT
-    test_split: float = TEST_SPLIT
-    batch_size: int = BATCH_SIZE
     epochs: int = EPOCHS
+    batch_size: int = BATCH_SIZE
     lr: float = LEARNING_RATE
-    hidden: int = HIDDEN_SIZE
-    use_class_weights: bool = USE_CLASS_WEIGHTS
-    tune_thresholds: bool = TUNE_THRESHOLDS
-    output_dir: str = RETRAIN_OUTPUT_DIR
+    hidden_size: int = HIDDEN_SIZE
+    dropout: float = DROPOUT
+    label_smoothing: float = LABEL_SMOOTHING
 
     def __post_init__(self):
         if self.labels is None:
             self.labels = LABELS[:]
-        os.makedirs(self.output_dir, exist_ok=True)
+        os.makedirs(RETRAIN_DIR, exist_ok=True)
         os.makedirs(MODELS_DIR, exist_ok=True)
 
-def get_config(overrides: dict = None) -> RetrainConfig:
+def get_config(overrides=None) -> RetrainConfig:
     cfg = RetrainConfig()
     if overrides:
         for k, v in overrides.items():
@@ -97,10 +93,7 @@ def get_config(overrides: dict = None) -> RetrainConfig:
                 setattr(cfg, k, v)
     return cfg
 
-# For easy import in scripts
 if __name__ == "__main__":
-    print("7-tag labels:", LABELS)
-    print("DATASET_DIR (current):", DATASET_DIR)
-    print("Expected structure:")
-    for lbl in LABELS:
-        print(f"  {DATASET_DIR}/{lbl}/  (images)")
+    print("7-Parent Labels:", LABELS)
+    print("DATASET_DIR:", DATASET_DIR)
+    print("Expected folders:", LABELS)
