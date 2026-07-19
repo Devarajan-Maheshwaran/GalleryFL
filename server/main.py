@@ -20,7 +20,7 @@ from metrics import MetricsStore
 from model_manager import ModelManager
 from fl_coordinator import FLCoordinator
 from ws_manager import ws_manager
-from security import validate_update, AuditLog, TrustScorer, RateLimiter
+from security import validate_update, AuditLog, TrustScorer, RateLimiter, generate_access_code
 from taxonomy_parser import TaxonomyParser
 from tag_demand import TagDemandStore
 
@@ -64,12 +64,6 @@ rate_limiter = RateLimiter()
 coordinator = FLCoordinator(config, metrics_store, model_manager, trust_scorer)
 historical_norms: list = []
 
-def encrypt_access_code(url: str, token: str) -> str:
-    raw_bytes = f"{url}|{token}".encode('utf-8')
-    key_bytes = "FGT-SECURE-KEY-2026".encode('utf-8')
-    xor_bytes = bytearray(b ^ key_bytes[i % len(key_bytes)] for i, b in enumerate(raw_bytes))
-    return base64.b64encode(xor_bytes).decode('utf-8')
-
 def get_lan_ip() -> str:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -85,8 +79,7 @@ def get_lan_ip() -> str:
 async def startup_event():
     lan_ip = get_lan_ip()
     port = config.port
-    encoded_code = encrypt_access_code(f"http://{lan_ip}:{port}", config.server_token)
-    
+
     # Start UDP Broadcast Discovery Listener in a daemon thread
     import socket
     import threading
@@ -142,7 +135,6 @@ async def startup_event():
     logging.info(f"LAN IP: {lan_ip}")
     logging.info(f"Port: {port}")
     logging.info(f"FGT Access Code: {config.server_token}")
-    logging.info(f"Backup Full Code: {encoded_code}")
     logging.info("=========================================")
 
 class RegisterRequest(BaseModel):
@@ -184,6 +176,23 @@ async def get_current_model(client_version: int = 0):
         media_type="text/plain",
         headers={"X-Model-Format": "full", "X-Model-Version": str(model_manager.current_version)}
     )
+
+@app.get("/api/model/status")
+async def model_status():
+    """Lightweight liveness/availability check the app can poll on first launch
+    (or before Scan & Group) to detect an unsynced / unloaded model and show a
+    'Model is not synced' prompt instead of failing silently."""
+    head_present = (
+        os.path.exists(os.path.join(model_manager.model_dir, "head_weights.npz"))
+        or os.path.exists(os.path.join(model_manager.model_dir, "initial_head_weights.npz"))
+    )
+    return {
+        "loaded": len(model_manager.global_weights) > 0,
+        "model_version": model_manager.current_version,
+        "head_present": head_present,
+        "min_clients": config.min_clients,
+    }
+
 
 @app.get("/api/model/schema")
 async def get_model_schema():
@@ -264,7 +273,7 @@ async def get_training_status():
 
 @app.post("/api/training/regenerate-token")
 async def regenerate_token():
-    config.server_token = secrets.token_hex(4)
+    config.server_token = generate_access_code(8)
     config.save()
     
     # Revoke registrations

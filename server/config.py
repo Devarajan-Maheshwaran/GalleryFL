@@ -1,6 +1,8 @@
 from pydantic import BaseModel
 import os
 
+from security import generate_access_code
+
 import json
 
 class ServerConfig(BaseModel):
@@ -17,7 +19,7 @@ class ServerConfig(BaseModel):
     dp_delta: float = 1e-5
     max_grad_norm: float = 1.0
     convergence_threshold: float = 0.001
-    server_token: str = os.environ.get("FGT_SERVER_TOKEN", "fgt-pass")
+    server_token: str = os.environ.get("FGT_SERVER_TOKEN", generate_access_code())
 
 
     model_path: str = "models/base_model.tflite"

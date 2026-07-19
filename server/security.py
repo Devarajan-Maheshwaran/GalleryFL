@@ -3,6 +3,15 @@ from typing import List, Tuple, Dict
 import json
 import os
 import time
+import secrets
+import string
+
+
+def generate_access_code(length: int = 8) -> str:
+    """Simple, human-friendly access code: uppercase letters + digits,
+    excluding visually ambiguous characters (0/O, 1/I/L)."""
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 class AuditLog:
     def __init__(self, log_file: str = "output/audit.log"):
