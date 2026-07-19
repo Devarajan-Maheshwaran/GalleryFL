@@ -1,4 +1,5 @@
 import asyncio
+import os
 import time
 import numpy as np
 from typing import Dict, List, Set
@@ -154,10 +155,15 @@ class FLCoordinator:
             # FedProx is enforced by the client local objective. Applying it a
             # second time here is not FedProx and double-regularises updates.
             self.model_manager.update_global_weights(aggregated)
-            asyncio.create_task(self._run_evaluation())
 
-            avg_loss = float(np.mean([m.get("local_loss", 0.0) for m in self.client_metadata.values()]))
-            avg_acc = float(np.mean([m.get("local_accuracy", 0.0) for m in self.client_metadata.values()]))
+            # REAL per-round quality: evaluate the freshly aggregated head on the
+            # held-out probe (TF-free numpy forward pass) and use *those* numbers
+            # for the dashboard's accuracy/loss charts. Previously we averaged
+            # each client's self-reported training metrics, which were flat and
+            # made the charts look constant/wrongly wired.
+            eval_result = await asyncio.to_thread(self._run_evaluation)
+            avg_loss = float(eval_result.get("loss", 0.0))
+            avg_acc = float(eval_result.get("macro_f1", 0.0))
             total_samples = sum(m.get("num_samples", 0) for m in self.client_metadata.values())
             metrics = RoundMetrics(
                 round=self.current_round, timestamp=time.time(), num_clients=num_updates,
@@ -200,8 +206,18 @@ class FLCoordinator:
             trust_scores = np.array([self.trust_scorer.get_score(cid) for cid in self.client_updates])
         else:
             trust_scores = np.ones_like(sample_counts, dtype=float)
-            
-        effective_weights = sample_counts * trust_scores
+
+        # Demand-aware aggregation: clients whose local tag usage aligns with the
+        # collective (global) demand get a little more say in the global head,
+        # so the aggregated model is biased toward what users actually want
+        # (a "smarter" global model). Per-user Non-IID skew is still handled
+        # on-device via personalisation bias offsets.
+        demand_weights = np.array([
+            float(self.client_metadata[cid].get("demand_weight", 1.0))
+            for cid in self.client_updates
+        ])
+
+        effective_weights = sample_counts * trust_scores * demand_weights
         sample_weights = effective_weights / (effective_weights.sum() + 1e-9)
 
         for i in range(num_layers):
@@ -225,18 +241,40 @@ class FLCoordinator:
 
         return aggregated
 
-    async def _run_evaluation(self):
+    def _run_evaluation(self) -> dict:
+        """Run the TF-free server-side head evaluation and return real metrics.
+
+        prep_eval.py mirrors the Android head forward pass in pure numpy (no
+        TensorFlow) and writes output/latest_eval.json + output/
+        bootstrap_eval_report.json (real per-class F1 + a genuine BCE loss).
+        We run it synchronously inside a worker thread (see caller) and read
+        the result back so the round metrics reflect the *actual* model, not
+        client self-reports.
+        """
+        import json as _json
+        import subprocess
+        import sys
+
+        result = {"loss": 0.0, "macro_f1": 0.0, "accuracy": 0.0}
         try:
-            import subprocess
-            import sys
-            logging.info("Starting TF-free server-side evaluation (prep_eval.py)...")
-            # prep_eval.py mirrors the Android head forward pass in pure numpy
-            # (no TensorFlow needed) and writes output/latest_eval.json +
-            # output/bootstrap_eval_report.json so the comparison endpoint is
-            # populated with real per-class F1 after every round.
-            subprocess.Popen([sys.executable, "prep_eval.py"])
+            logging.info("Running server-side head evaluation (prep_eval.py)...")
+            subprocess.run(
+                [sys.executable, "prep_eval.py"],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                check=False,
+                timeout=120,
+            )
+            eval_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output", "latest_eval.json")
+            if os.path.exists(eval_path):
+                with open(eval_path, "r") as f:
+                    data = _json.load(f)
+                result["loss"] = float(data.get("loss", 0.0))
+                result["macro_f1"] = float(data.get("macro_f1", 0.0))
+                result["accuracy"] = float(data.get("accuracy", 0.0))
+                logging.info(f"Eval -> loss={result['loss']:.4f} macro_f1={result['macro_f1']:.4f}")
         except Exception as e:
             logging.error(f"Evaluation failed: {e}")
+        return result
 
     async def on_client_disconnected(self, client_id: str) -> None:
         if client_id in self.round_participants:

@@ -27,6 +27,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import com.fgt.galleryfl.data.local.*
 import com.fgt.galleryfl.data.ml.*
@@ -293,7 +298,8 @@ fun MainScreen(
         onDispose { wsClient.disconnect() }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(FGTColors.BgBase)) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        AppBackdrop(Modifier.fillMaxSize())
         Scaffold(
             containerColor = Color.Transparent,
             topBar = {
@@ -576,8 +582,8 @@ fun PhotosTopBar(
                 },
                 shape = RoundedCornerShape(24.dp),
                 colors = OutlinedTextFieldDefaults.colors(
-                    unfocusedContainerColor = FGTColors.BgSurface,
-                    focusedContainerColor = FGTColors.BgSurface,
+                    unfocusedContainerColor = FGTColors.BgGlass,
+                    focusedContainerColor = FGTColors.BgGlass,
                     unfocusedBorderColor = Color.Transparent,
                     focusedBorderColor = FGTColors.AccentPrimary
                 )
@@ -611,9 +617,11 @@ fun PhotosBottomNav(selectedTab: Int, onTabSelected: (Int) -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 24.dp, vertical = 16.dp)
-            .height(64.dp),
-        cornerRadius = 32.dp,
-        backgroundColor = FGTColors.BgGlass.copy(alpha = 0.9f)
+            .height(68.dp),
+        cornerRadius = 34.dp,
+        backgroundColor = FGTColors.BgSurface.copy(alpha = 0.72f),
+        borderColor = Color.White.copy(alpha = 0.65f),
+        elevation = 24.dp
     ) {
         Row(
             modifier = Modifier.fillMaxSize(),
@@ -631,15 +639,24 @@ fun PhotosBottomNav(selectedTab: Int, onTabSelected: (Int) -> Unit) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
-                        .clip(CircleShape)
+                        .clip(RoundedCornerShape(18.dp))
                         .clickable { onTabSelected(index) }
-                        .padding(8.dp)
+                        .background(
+                            if (isSelected) Color.White.copy(alpha = 0.6f) else Color.Transparent
+                        )
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
                 ) {
                     Icon(
                         imageVector = icon,
                         contentDescription = label,
                         tint = if (isSelected) FGTColors.AccentPrimary else FGTColors.TextSecondary,
-                        modifier = Modifier.size(if (isSelected) 28.dp else 24.dp)
+                        modifier = Modifier.size(if (isSelected) 26.dp else 22.dp)
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isSelected) FGTColors.AccentPrimary else FGTColors.TextSecondary
                     )
                 }
             }
@@ -671,15 +688,31 @@ fun FLSyncDialog(
         onConnect(code)
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.CloudSync, null, tint = FGTColors.AccentPrimary)
-            Spacer(Modifier.width(12.dp))
-            Text("Model Sync")
-        }},
-        text = {
-            Column {
+    Dialog(onDismissRequest = onDismiss) {
+        GlassContainer(
+            modifier = Modifier.fillMaxWidth(0.92f),
+            cornerRadius = 28.dp,
+            backgroundColor = FGTColors.BgSurface.copy(alpha = 0.92f),
+            borderColor = Color.White.copy(alpha = 0.6f),
+            elevation = 30.dp
+        ) {
+            Column(Modifier.padding(24.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Image(
+                        painter = painterResource(R.drawable.ic_aperture),
+                        contentDescription = null,
+                        modifier = Modifier.size(30.dp),
+                        colorFilter = ColorFilter.tint(FGTColors.AccentPrimary)
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        "Model Sync",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = FGTColors.TextPrimary
+                    )
+                }
+                Spacer(Modifier.height(16.dp))
                 Text(
                     if (isConnected) statusText else "Enter your coordinator access code to sync the model. Your photos never leave this device.",
                     style = MaterialTheme.typography.bodyMedium, color = FGTColors.TextSecondary
@@ -701,30 +734,33 @@ fun FLSyncDialog(
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
-            }
-        },
-        confirmButton = {
-            if (!isConnected) {
-                Button(onClick = { tryConnect() }) { Text("Sync Now") }
-            } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = onDisconnect, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Disconnect") }
-                    TextButton(onClick = onDismiss) { Text("Done") }
+                Spacer(Modifier.height(20.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    if (!isConnected) {
+                        Button(onClick = { tryConnect() }) { Text("Sync Now") }
+                    } else {
+                        TextButton(
+                            onClick = onDisconnect,
+                            colors = ButtonDefaults.textButtonColors(contentColor = FGTColors.Error)
+                        ) { Text("Disconnect") }
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(onClick = onDismiss) { Text("Done") }
+                    }
                 }
             }
         }
-    )
+    }
 }
 
 @Composable
 fun PermissionScreen(onRequest: () -> Unit) {
-    Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-        Icon(Icons.Outlined.PhotoLibrary, null, Modifier.size(80.dp), tint = FGTColors.AccentPrimary)
-        Spacer(Modifier.height(24.dp))
-        Text("Allow access to your photos", style = MaterialTheme.typography.headlineSmall, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, color = FGTColors.TextPrimary)
-        Spacer(Modifier.height(12.dp))
-        Text("To organize your gallery automatically, FGT needs permission to see your photos. Your photos never leave this device.", textAlign = androidx.compose.ui.text.style.TextAlign.Center, color = FGTColors.TextSecondary)
-        Spacer(Modifier.height(32.dp))
-        Button(onClick = onRequest, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text("Allow Access") }
-    }
+    EmptyState(
+        title = "Allow access to your photos",
+        message = "To organize your gallery automatically, FGT needs permission to see your photos. Your photos never leave this device.",
+        actionLabel = "Allow Access",
+        onAction = onRequest
+    )
 }

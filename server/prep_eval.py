@@ -76,8 +76,15 @@ def evaluate(weights):
     w1, b1, w2, b2 = weights
     P = forward(X, w1, b1, w2, b2)
     yhat = (P > 0.5).astype(np.float32)
+    eps = 1e-7
+    Pc = np.clip(P, eps, 1.0 - eps)
+    # Mean binary cross-entropy over the held-out probe — a genuine, varying
+    # loss signal (unlike the client self-reported loss, which was flat).
+    bce = -(Y * np.log(Pc) + (1.0 - Y) * np.log(1.0 - Pc))
+    loss = float(bce.mean())
     per_class = {}
     f1s = []
+    accs = []
     for c in range(NUM_CLASSES):
         yt = Y[:, c]
         yp = yhat[:, c]
@@ -97,9 +104,12 @@ def evaluate(weights):
             "support": support,
         }
         f1s.append(f1)
+        accs.append(acc)
     return {
         "per_class": per_class,
         "macro_f1": round(float(np.mean(f1s)), 4),
+        "accuracy": round(float(np.mean(accs)), 4),
+        "loss": round(loss, 6),
         "num_samples": int(X.shape[0]),
     }
 

@@ -3,37 +3,36 @@ package com.fgt.galleryfl.ui.theme
 import androidx.compose.ui.graphics.Color
 
 /**
- * Shared GalleryFL palette — "Blush / Web3 soft".
+ * Shared GalleryFL palette — "Monochrome / Liquid Glass".
  *
- * This is the SAME color logic used by the web coordinator console
- * (server/dashboard/styles.css) so the two surfaces read as one product:
- *   - near-white / light-pink surfaces
- *   - rose primary + lavender secondary ("fun but serious")
- *   - ink-plum text
- *   - soft, low-opacity shadows (see styles.css --shadow-*)
+ * A neutral black & white system (no rose/lavender). Surfaces are near-white
+ * with layered translucency; the single accent is a neutral graphite so the
+ * frosted material reads as glass, not colour. This mirrors the web coordinator
+ * console (server/dashboard/styles.css) so the two surfaces read as one product.
  *
  * Constant names are kept stable so every screen keeps compiling; only the
- * values changed to the light system.
+ * values changed to the monochrome system.
  */
 object FGTColors {
-    val BgBase = Color(0xFFFDF6FB)        // near-white with a pink wash
+    val BgBase = Color(0xFFF7F7F8)        // near-white
     val BgSurface = Color(0xFFFFFFFF)     // pure card white
-    val BgSurface2 = Color(0xFFFDF6FB)    // light pink surface (cards/rows)
-    val OnPrimary = Color(0xFFFFFFFF)      // text on rose/lavender
-    val BgGlass = Color(0x26EF4D9B)       // translucent rose (light glass)
+    val BgSurface2 = Color(0xFFF1F1F3)    // light neutral surface (cards/rows)
+    val OnPrimary = Color(0xFFFFFFFF)     // text on dark/neutral
+    val BgGlass = Color(0x26FFFFFF)       // translucent white (light glass)
 
-    val AccentPrimary = Color(0xFFEF4D9B) // rose
-    val AccentSecondary = Color(0xFF8B7FE8) // lavender
+    // Monochrome accent — neutral graphite, not a hue.
+    val AccentPrimary = Color(0xFF0A0A0A)   // near-black
+    val AccentSecondary = Color(0xFF3A3A3C) // graphite
 
-    val TextPrimary = Color(0xFF2A1B2E)   // ink plum
-    val TextSecondary = Color(0x9E2A1B2E) // ~62% ink plum
+    val TextPrimary = Color(0xFF0A0A0A)   // ink
+    val TextSecondary = Color(0x9E0A0A0A) // ~62% ink
 
-    val GlassOverlay = Color(0x33000000)
-    val Error = Color(0xFFF0445E)
+    val GlassOverlay = Color(0x1F000000)
+    val Error = Color(0xFFD6392B)
 
-    /* Dark-mode matrix (Liquid Glass over true-black OLED). Accents stay Blush. */
-    val BgBaseDark = Color(0xFF0E0710)
-    val BgSurfaceDark = Color(0xFF1A1220)
+    /* Dark-mode matrix (Liquid Glass over true-black OLED). Accent stays neutral. */
+    val BgBaseDark = Color(0xFF0A0A0B)
+    val BgSurfaceDark = Color(0xFF161618)
     val BgGlassDark = Color(0x33FFFFFF)
     val TextPrimaryDark = Color(0xFFFFFFFF)
     val TextSecondaryDark = Color(0x9EFFFFFF)

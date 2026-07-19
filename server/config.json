@@ -10,7 +10,7 @@
   "trim_pct": 0.1,
   "dp_epsilon": 1.0,
   "dp_delta": 1e-05,
-  "max_grad_norm": 1.0,
+  "max_grad_norm": 50.0,
   "convergence_threshold": 0.001,
   "server_token": "2c79bdfe",
   "model_path": "models/base_model.tflite",

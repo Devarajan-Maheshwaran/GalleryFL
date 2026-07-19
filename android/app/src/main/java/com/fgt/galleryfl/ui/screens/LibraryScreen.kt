@@ -22,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.fgt.galleryfl.data.local.GalleryAlbum
+import com.fgt.galleryfl.ui.components.*
 import com.fgt.galleryfl.ui.theme.FGTColors
 
 @Composable
@@ -29,7 +30,6 @@ fun LibraryScreen(smartAlbums: List<GalleryAlbum>) {
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .background(FGTColors.BgBase)
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(24.dp)
     ) {
@@ -44,10 +44,10 @@ fun LibraryScreen(smartAlbums: List<GalleryAlbum>) {
         
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                LibraryUtilityItem("Favorites", Icons.Default.Favorite, Color(0xFFEF4444))
-                LibraryUtilityItem("Utilities", Icons.Default.Build, Color(0xFF6366F1))
-                LibraryUtilityItem("Archive", Icons.Default.Archive, Color(0xFF10B981))
-                LibraryUtilityItem("Trash", Icons.Default.Delete, Color(0xFFF59E0B))
+                LibraryUtilityItem("Favorites", Icons.Default.Favorite)
+                LibraryUtilityItem("Utilities", Icons.Default.Build)
+                LibraryUtilityItem("Archive", Icons.Default.Archive)
+                LibraryUtilityItem("Trash", Icons.Default.Delete)
             }
         }
 
@@ -56,31 +56,39 @@ fun LibraryScreen(smartAlbums: List<GalleryAlbum>) {
         }
 
         items(smartAlbums) { album ->
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
+            GlassContainer(
+                modifier = Modifier.fillMaxWidth(),
+                cornerRadius = 18.dp,
+                elevation = 12.dp
             ) {
-                Box(
-                    Modifier
-                        .size(80.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(FGTColors.BgSurface)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)
                 ) {
-                    AsyncImage(
-                        model = album.images.firstOrNull()?.uri,
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-                Spacer(modifier = Modifier.width(16.dp))
-                Column {
-                    Text(album.tagName, fontWeight = FontWeight.Bold, color = FGTColors.TextPrimary)
-                    Text(
-                        "Pictures/FGT/${album.folderPath.substringAfter("/")}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = FGTColors.TextSecondary
-                    )
+                    Box(
+                        Modifier
+                            .size(72.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(FGTColors.BgSurface2)
+                    ) {
+                        AsyncImage(
+                            model = album.images.firstOrNull()?.uri,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column {
+                        Text(album.tagName, fontWeight = FontWeight.Bold, color = FGTColors.TextPrimary)
+                        Text(
+                            "Pictures/FGT/${album.folderPath.substringAfter("/")}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = FGTColors.TextSecondary
+                        )
+                    }
                 }
             }
         }
@@ -88,15 +96,15 @@ fun LibraryScreen(smartAlbums: List<GalleryAlbum>) {
 }
 
 @Composable
-fun LibraryUtilityItem(label: String, icon: ImageVector, color: Color) {
+fun LibraryUtilityItem(label: String, icon: ImageVector) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Surface(
             shape = RoundedCornerShape(16.dp),
-            color = color.copy(alpha = 0.1f),
+            color = FGTColors.AccentPrimary.copy(alpha = 0.08f),
             modifier = Modifier.size(56.dp)
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(icon, contentDescription = label, tint = color, modifier = Modifier.size(28.dp))
+                Icon(icon, contentDescription = label, tint = FGTColors.TextPrimary, modifier = Modifier.size(26.dp))
             }
         }
         Spacer(modifier = Modifier.height(8.dp))

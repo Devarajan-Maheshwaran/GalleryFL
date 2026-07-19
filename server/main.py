@@ -223,10 +223,14 @@ async def submit_update(req: ClientUpdateRequest):
 
     logging.info(f"Update ACCEPTED from client {req.client_id[:8]} (samples={req.num_samples}, loss={req.local_loss:.4f}, accuracy={req.local_accuracy:.4f})")
 
+    # Demand-aware weight: clients whose tag usage aligns with collective demand
+    # get slightly more influence on the global head (see fl_coordinator).
+    demand_weight = tag_demand.demand_weight_for_client(req.client_id)
+
     accepted = coordinator.submit_client_update(
         req.client_id, weights,
         {"num_samples": req.num_samples, "local_loss": req.local_loss, "local_accuracy": req.local_accuracy,
-         "round": req.round, "base_model_version": req.base_model_version}
+         "round": req.round, "base_model_version": req.base_model_version, "demand_weight": demand_weight}
     )
     if not accepted:
         raise HTTPException(status_code=409, detail="Update is stale, duplicate, or no training round is active")
@@ -305,6 +309,13 @@ async def start_training(req: Optional[TrainingStartRequest] = None):
         if req.local_epochs is not None:
             config.local_epochs = req.local_epochs
         logging.info(f"Updated training config from dashboard: min_clients={config.min_clients}, max_rounds={config.max_rounds}, local_epochs={config.local_epochs}")
+    # Fresh anomaly-detection baseline for this session. The 3-sigma gate
+    # compares each round's delta norm against recent history; carrying history
+    # across sessions (or a client-strategy change, e.g. switching from a tiny
+    # fixed clip to adaptive clipping) would reject legitimate larger deltas as
+    # "anomalies". Clearing here keeps the gate meaningful without blocking
+    # valid updates.
+    historical_norms.clear()
     asyncio.create_task(coordinator.start_training())
     return {"status": "started"}
 
@@ -340,14 +351,18 @@ async def post_tag_signal(req: TagSignalRequest):
         accepted = [t for t in incoming if t in _VALID_TAGS]
     else:
         accepted = [t for t in incoming if isinstance(t, str) and t]
-    recorded = tag_demand.record(accepted)
+    recorded = tag_demand.record(accepted, client_id=req.client_id)
     return {"ok": True, "received": len(incoming), "recorded": recorded, "client_id": req.client_id}
 
 
 @app.get("/api/taxonomy/demand")
-async def get_tag_demand():
-    """Recency-weighted demand over the taxonomy: which tags are hot right now."""
-    return tag_demand.snapshot()
+async def get_tag_demand(client_id: Optional[str] = None):
+    """Recency-weighted demand over the taxonomy: which tags are hot right now.
+
+    Pass `?client_id=...` to get that client's *personal* demand histogram
+    (the Non-IID personalisation view) instead of the global aggregate.
+    """
+    return tag_demand.snapshot(client_id=client_id)
 
 
 @app.get("/api/config")

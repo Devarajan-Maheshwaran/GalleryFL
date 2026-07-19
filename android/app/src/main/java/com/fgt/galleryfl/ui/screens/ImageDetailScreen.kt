@@ -214,7 +214,7 @@ fun ImageDetailScreen(
                                         Modifier
                                             .weight(1f)
                                             .fillMaxSize()
-                                            .background(Color(1f, 0.2f, 0f, v))
+                                            .background(Color(1f, 1f, 1f, v))
                                     )
                                 }
                             }

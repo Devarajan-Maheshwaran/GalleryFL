@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.fgt.galleryfl.data.local.GalleryAlbum
+import com.fgt.galleryfl.ui.components.*
 import com.fgt.galleryfl.ui.theme.FGTColors
 
 @Composable
@@ -41,7 +42,7 @@ fun ExploreScreen(
     canUndo: Boolean = false,
     modelReady: Boolean = true
 ) {
-    Column(modifier = Modifier.fillMaxSize().background(FGTColors.BgBase)) {
+    Column(modifier = Modifier.fillMaxSize()) {
         Text(
             "Explore",
             style = MaterialTheme.typography.headlineLarge,
@@ -76,12 +77,20 @@ fun ExploreScreen(
         
         if (smartAlbums.isEmpty() && !isScanning) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Outlined.AutoAwesome, null, Modifier.size(64.dp), tint = FGTColors.AccentPrimary)
-                    Spacer(Modifier.height(16.dp))
-                    Text("Your AI categories will appear here", color = FGTColors.TextSecondary)
-                    Spacer(Modifier.height(24.dp))
-                    Button(onClick = onScanClick) { Text("Scan & Group") }
+                GlassContainer(
+                    modifier = Modifier.widthIn(max = 320.dp).padding(24.dp),
+                    cornerRadius = 28.dp
+                ) {
+                    Column(
+                        Modifier.padding(28.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(Icons.Outlined.AutoAwesome, null, Modifier.size(64.dp), tint = FGTColors.AccentPrimary)
+                        Spacer(Modifier.height(16.dp))
+                        Text("Your AI categories will appear here", color = FGTColors.TextSecondary, textAlign = TextAlign.Center)
+                        Spacer(Modifier.height(24.dp))
+                        Button(onClick = onScanClick) { Text("Scan & Group") }
+                    }
                 }
             }
         } else if (isScanning) {
@@ -98,10 +107,12 @@ fun ExploreScreen(
                 item {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         items(categories.keys.toList()) { category ->
-                            Surface(
-                                shape = RoundedCornerShape(20.dp),
-                                color = FGTColors.AccentPrimary.copy(alpha = 0.1f),
-                                modifier = Modifier.clickable { /* Filter logic in main */ }
+                            GlassContainer(
+                                modifier = Modifier.clickable { /* Filter logic in main */ },
+                                cornerRadius = 20.dp,
+                                backgroundColor = FGTColors.BgGlass,
+                                elevation = 10.dp,
+                                sheen = false
                             ) {
                                 Text(
                                     category,
@@ -168,14 +179,13 @@ private fun FederatedIntelligenceIndicator(isActive: Boolean) {
 
 @Composable
 fun ImmersiveAlbumCard(album: GalleryAlbum, onClick: (GalleryAlbum) -> Unit) {
-    Card(
+    GlassContainer(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onClick(album) },
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = FGTColors.BgSurface)
+        cornerRadius = 24.dp
     ) {
-        Column {
+        Box {
             AsyncImage(
                 model = album.images.firstOrNull()?.uri,
                 contentDescription = null,
@@ -185,18 +195,27 @@ fun ImmersiveAlbumCard(album: GalleryAlbum, onClick: (GalleryAlbum) -> Unit) {
                     .clip(RoundedCornerShape(24.dp)),
                 contentScale = ContentScale.Crop
             )
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    album.tagName,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = FGTColors.TextPrimary
-                )
-                Text(
-                    "${album.images.size} items",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = FGTColors.TextSecondary
-                )
+            // Frosted label strip over the photo (glass over imagery).
+            Box(
+                Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .background(FGTColors.BgGlass)
+                    .padding(14.dp)
+            ) {
+                Column {
+                    Text(
+                        album.tagName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = FGTColors.TextPrimary
+                    )
+                    Text(
+                        "${album.images.size} items",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = FGTColors.TextSecondary
+                    )
+                }
             }
         }
     }

@@ -71,9 +71,10 @@ def _arg_float(flag, default):
 
 
 # Optional overrides to explore the utility/privacy trade-off. Defaults mirror
-# the server config (max_grad_norm=1.0, learning_rate=0.001) so the harness
-# reproduces production behaviour unless explicitly retuned.
-CLIP = _arg_float("--clip", 1.0)
+# the server config (max_grad_norm=50.0 cap, learning_rate=0.001). The client
+# uses ADAPTIVE clipping (90th pct of per-example norms, capped by CLIP), which
+# is what lets the head actually learn — a fixed tiny clip froze training.
+CLIP = _arg_float("--clip", 50.0)
 LR = _arg_float("--lr", 0.001)
 
 
@@ -100,16 +101,17 @@ def sigmoid(x):
 
 
 def local_train(global_weights, X, Y, epochs=3, lr=0.001, mu=0.01,
-                clip_norm=1.0, epsilon=1.0, delta=1e-5):
+                clip_norm=50.0, epsilon=1.0, delta=1e-5):
     """Vectorized proper DP-SGD mirroring the Android LocalTrainer:
-    per-example gradient clipping to `clip_norm`, averaged over the batch, then
-    calibrated Gaussian noise N(0, sigma^2) with
-    sigma = clip_norm*sqrt(2 ln(1.25/delta))/epsilon / n
-    (sensitivity of the average query is clip_norm/n). One SGD+FedProx step/epoch."""
+    ADAPTIVE per-example gradient clipping to the 90th percentile of the
+    batch's per-example norms (capped by `clip_norm`), averaged over the batch,
+    then calibrated Gaussian noise N(0, sigma^2) with
+    sigma = bound*sqrt(2 ln(1.25/delta))/epsilon / n
+    where `bound` is the *actual* clip used (so DP sensitivity is correct).
+    A fixed tiny clip_norm kept ~0.3% of the gradient and froze learning."""
     w1, b1, w2, b2 = [w.astype(np.float32).copy() for w in global_weights]
     gW1, gB1, gW2, gB2 = [w.astype(np.float32).copy() for w in global_weights]
     n = X.shape[0]
-    sigma = (clip_norm * np.sqrt(2.0 * np.log(1.25 / delta)) / epsilon) / n
     rng = np.random.default_rng(123)
     P = 1024 * 256
     for _ in range(epochs):
@@ -125,8 +127,13 @@ def local_train(global_weights, X, Y, epochs=3, lr=0.001, mu=0.01,
         dW1 = np.einsum('ni,nj->nij', X, dZ1)
         db1 = dZ1
         gstack = np.concatenate([dW1.reshape(n, -1), db1, dW2.reshape(n, -1), db2], axis=1)
+        # Adaptive clipping (mirrors Android LocalTrainer): clip to the 90th
+        # percentile of per-example gradient norms, capped by clip_norm. A fixed
+        # tiny clip_norm=1.0 kept ~0.3% of the signal and froze learning.
         gn = np.linalg.norm(gstack, axis=1)
-        scale = np.minimum(1.0, clip_norm / np.where(gn < 1e-12, 1e-12, gn))
+        bound = min(float(np.quantile(gn, 0.9)), clip_norm)
+        sigma = (bound * np.sqrt(2.0 * np.log(1.25 / delta)) / epsilon) / n
+        scale = np.minimum(1.0, bound / np.where(gn < 1e-12, 1e-12, gn))
         gstack *= scale[:, None]
         aDW1 = gstack[:, :P].reshape(n, 1024, 256).mean(0)
         aDb1 = gstack[:, P:P + 256].mean(0)

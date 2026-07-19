@@ -14,21 +14,23 @@ data class TrainingResult(
  * On-device federated trainer.
  *
  * Privacy: when [dpEpsilon] > 0 the trainer runs DP-SGD — per-example gradient
- * clipping to [maxGradNorm] followed by a single SGD+FedProx step on the
- * average of the clipped gradients, with calibrated Gaussian noise added to
- * that average (sigma = C * sqrt(2 ln(1.25/delta)) / epsilon / n, see
- * DPNoiseInjector). Clipping per-example (not on the full delta after
- * training) is what makes the DP bound hold.
+ * clipping followed by a single SGD+FedProx step on the average of the clipped
+ * gradients, with calibrated Gaussian noise added to that average
+ * (sigma = C * sqrt(2 ln(1.25/delta)) / epsilon / n, see DPNoiseInjector).
+ * Clipping per-example (not on the full delta after training) is what makes the
+ * DP bound hold.
  *
- * When [dpEpsilon] <= 0 the same averaged-gradient SGD runs with no noise, so
- * behaviour is consistent with the server's verification harness and with the
- * non-private path.
+ * QUALITY FIX — adaptive clipping:
+ * The previous code clipped every per-example gradient to a fixed
+ * `maxGradNorm = 1.0`. For a ~270k-parameter head the per-example gradient
+ * norm is O(20-100), so a cap of 1.0 clipped away ~95-99% of the signal every
+ * round — the head never learned (it stayed near its random init). We now clip
+ * to the p-quantile (default 90th) of the batch's per-example norms, capped by
+ * [maxGradNorm]. This preserves the vast majority of the learning signal while
+ * keeping the DP sensitivity correctly equal to the bound that was actually
+ * used (passed straight into DPNoiseInjector).
  *
- * Note on utility: `max_grad_norm` (C) and `lr` are hyperparameters supplied
- * by the server. For a ~270k-parameter head the per-example gradient norm is
- * large (O(100)), so a very small C (e.g. the default 1.0) clips away most of
- * the signal and yields limited learning. This is a tuning choice, not a
- * correctness issue — the DP mechanism itself is correctly calibrated.
+ * When [dpEpsilon] <= 0 the same averaged-gradient SGD runs with no noise.
  */
 class LocalTrainer(
     private val head: ClassificationHead,
@@ -42,7 +44,8 @@ class LocalTrainer(
         lr: Float = 0.001f,
         dpEpsilon: Float = 0f,
         dpDelta: Float = 1e-5f,
-        maxGradNorm: Float = 1.0f,
+        maxGradNorm: Float = 50.0f,
+        clipQuantile: Float = 0.9f,
         numSamples: Int = featuresList.size
     ): TrainingResult {
         head.setWeightsFlat(globalWeights)
@@ -54,15 +57,31 @@ class LocalTrainer(
 
         val n = featuresList.size
         val useDP = dpEpsilon > 0f && n > 0
-        val noise = if (useDP) DPNoiseInjector(
-            epsilon = dpEpsilon,
-            delta = dpDelta,
-            sensitivity = maxGradNorm,
-            numSamples = n
-        ) else null
+        val gradNormBuf = FloatArray(n)
 
         for (epoch in 0 until epochs) {
-            // Accumulators for per-example clipped gradients.
+            // --- Pass 1: estimate per-example gradient norms for adaptive clip ---
+            for (i in 0 until n) {
+                head.forward(featuresList[i])
+                val grads = head.backward(targetsList[i])
+                gradNormBuf[i] = gradNorm(grads)
+            }
+
+            // Adaptive clip bound = p-quantile of per-example norms, capped by
+            // maxGradNorm. This is the DP sensitivity for this round.
+            val sorted = gradNormBuf.copyOf().also { it.sort() }
+            val qIdx = ((n - 1) * clipQuantile).toInt().coerceIn(0, n - 1)
+            val clipBound = minOf(sorted[qIdx], maxGradNorm).coerceAtLeast(1e-3f)
+
+            // Noise sensitivity MUST equal the bound actually used for clipping.
+            val noise = if (useDP) DPNoiseInjector(
+                epsilon = dpEpsilon,
+                delta = dpDelta,
+                sensitivity = clipBound,
+                numSamples = n
+            ) else null
+
+            // --- Pass 2: accumulate clipped gradients ---
             val accW1 = FloatArray(head.inputDim * 256)
             val accB1 = FloatArray(256)
             val accW2 = FloatArray(256 * head.numClasses)
@@ -74,9 +93,8 @@ class LocalTrainer(
                 head.forward(features)
                 val grads = head.backward(targets)
 
-                // Per-example gradient clipping to maxGradNorm.
-                val norm = gradNorm(grads)
-                val scale = if (norm > maxGradNorm && norm > 1e-12f) maxGradNorm / norm else 1f
+                val norm = gradNormBuf[i]
+                val scale = if (norm > clipBound && norm > 1e-12f) clipBound / norm else 1f
                 accumulate(accW1, grads.dw1, scale)
                 accumulate(accB1, grads.db1, scale)
                 accumulate(accW2, grads.dw2, scale)

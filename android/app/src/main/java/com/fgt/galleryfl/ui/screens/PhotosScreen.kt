@@ -11,6 +11,8 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -26,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.fgt.galleryfl.data.local.GalleryImage
+import com.fgt.galleryfl.ui.components.*
 import com.fgt.galleryfl.ui.theme.FGTColors
 import kotlin.math.min
 
@@ -51,7 +54,7 @@ fun PhotosScreen(
         derivedStateOf { gridState.firstVisibleItemIndex > 0 }
     }
 
-    Column(modifier = Modifier.fillMaxSize().background(FGTColors.BgBase)) {
+    Column(modifier = Modifier.fillMaxSize()) {
         // Large Header (iOS Style)
         AnimatedVisibility(
             visible = !showSmallTitle,
@@ -68,41 +71,10 @@ fun PhotosScreen(
         }
 
         if (photos.isEmpty()) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(32.dp)
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(20.dp),
-                        color = FGTColors.BgSurface,
-                        tonalElevation = 2.dp
-                    ) {
-                        Text(
-                            "🖼",
-                            fontSize = 40.sp,
-                            modifier = Modifier.padding(20.dp)
-                        )
-                    }
-                    Spacer(Modifier.height(16.dp))
-                    Text(
-                        "No photos yet",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = FGTColors.TextPrimary
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "Your gallery will appear here once photos are available on this device.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = FGTColors.TextSecondary,
-                        modifier = Modifier.padding(horizontal = 24.dp)
-                    )
-                }
-            }
+            EmptyState(
+                title = "No photos yet",
+                message = "Your gallery will appear here once photos are available on this device."
+            )
         } else {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(columns),
@@ -145,7 +117,21 @@ fun PhotosScreen(
         }
 
         peekImage?.let { img ->
-            ModalBottomSheet(onDismissRequest = { peekImage = null }, sheetState = sheetState) {
+            ModalBottomSheet(
+                onDismissRequest = { peekImage = null },
+                sheetState = sheetState,
+                containerColor = FGTColors.BgSurface.copy(alpha = 0.96f),
+                contentColor = FGTColors.TextPrimary,
+                dragHandle = {
+                    Box(
+                        Modifier
+                            .padding(vertical = 8.dp)
+                            .size(36.dp, 4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(FGTColors.TextSecondary.copy(alpha = 0.3f))
+                    )
+                }
+            ) {
                 Column(Modifier.padding(16.dp)) {
                     Text(img.displayName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = FGTColors.TextPrimary)
                     Spacer(Modifier.height(12.dp))

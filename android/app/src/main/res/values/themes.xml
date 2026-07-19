@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.GalleryFL" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:statusBarColor">#F5EFEB</item>
+        <item name="android:statusBarColor">#F7F7F8</item>
     </style>
 </resources>

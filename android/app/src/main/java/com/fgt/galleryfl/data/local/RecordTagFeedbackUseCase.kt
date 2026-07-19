@@ -6,6 +6,7 @@ class RecordTagFeedbackUseCase(
 ) {
     suspend fun recordConfirmed(imageId: Long, classIndex: Int) {
         feedbackStore.recordConfirmed(classIndex)
+        feedbackStore.recordDemand(classIndex)
         feedbackDao.insertFeedback(FeedbackEntity(imageId, classIndex, true))
     }
 
@@ -16,5 +17,6 @@ class RecordTagFeedbackUseCase(
     
     suspend fun recordPredicted(classIndex: Int) {
         feedbackStore.recordPredicted(classIndex)
+        feedbackStore.recordDemand(classIndex)
     }
 }

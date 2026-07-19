@@ -43,7 +43,7 @@ fun SearchScreen(
     val matchedAlbum = smartAlbums.firstOrNull { it.tagName.equals(query.trim(), ignoreCase = true) }
     val displayed = if (matchedAlbum != null) matchedAlbum.images else photos
 
-    Column(modifier = Modifier.fillMaxSize().background(FGTColors.BgBase)) {
+    Column(modifier = Modifier.fillMaxSize()) {
         Text(
             "Search",
             style = MaterialTheme.typography.headlineLarge,
@@ -62,8 +62,8 @@ fun SearchScreen(
             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = FGTColors.TextSecondary) },
             shape = RoundedCornerShape(24.dp),
             colors = OutlinedTextFieldDefaults.colors(
-                unfocusedContainerColor = FGTColors.BgSurface,
-                focusedContainerColor = FGTColors.BgSurface,
+                unfocusedContainerColor = FGTColors.BgGlass,
+                focusedContainerColor = FGTColors.BgGlass,
                 unfocusedBorderColor = Color.Transparent,
                 focusedBorderColor = FGTColors.AccentPrimary
             ),
