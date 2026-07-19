@@ -7,11 +7,10 @@ Dataset: COCO minitrain-10k mapped to 7 parents
 Backbone: Frozen base_model.tflite (1024-d features)
 
 Training recipe (designed for non-IID gallery data but starting from COCO):
-- Softmax head
-- Label smoothing + class weights
-- Feature standardization
-- Early stopping on macro F1 (argmax)
-- Best checkpoint saved
+- Softmax head (single-label)
+- Class weights + feature standardization
+- Macro F1 via argmax (top-1)
+- Best checkpoint saved in exact 4-layer GalleryFL format (w1/b1/w2/b2)
 """
 
 import argparse
@@ -137,7 +136,7 @@ def main():
 
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=cfg.lr, weight_decay=1e-4),
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(),
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(),  # IMPORTANT: NO label_smoothing (TF venv compat)
         metrics=["accuracy"]
     )
 
