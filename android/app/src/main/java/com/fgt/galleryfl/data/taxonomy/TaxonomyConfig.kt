@@ -1,5 +1,11 @@
 package com.fgt.galleryfl.data.taxonomy
 
+/**
+ * Detailed gallery taxonomy plus the seven parent outputs of the ML head.
+ *
+ * The 34 leaf tags remain product metadata for future sub-tag personalization;
+ * they are not output neurons. Model indices always follow [modelTags].
+ */
 object TaxonomyConfig {
 
     val categories = listOf(
@@ -53,20 +59,22 @@ object TaxonomyConfig {
         ))
     )
 
-    // Deterministic ordering of leaf tags for the classification head
+    /** Detailed tags are metadata, not model outputs. */
     val leafTags: List<TaxonomyTag> = categories.flatMap { it.children }
-    
-    // Total number of classes
-    val NUM_CLASSES = leafTags.size
 
-    // Map class index to folder policy
+    /** Exact order shared with server/retrain/config.py and model_schema.json. */
+    val modelTags: List<TaxonomyTag> = categories.map {
+        TaxonomyTag(it.id, it.name, 0.0f)
+    }
+
+    const val NUM_CLASSES: Int = 7
+
+    init {
+        check(modelTags.size == NUM_CLASSES) { "GalleryFL model taxonomy must have seven parents" }
+    }
+
     fun getPolicyForClassIndex(index: Int): FolderPolicy? {
-        if (index < 0 || index >= leafTags.size) return null
-        val tag = leafTags[index]
-        val category = categories.find { it.children.contains(tag) } ?: return null
-        // Avoid creating a noisy album from a single uncertain prediction.
-        // FolderPolicy's default keeps the organisation preview and execution
-        // threshold aligned at three matching images.
-        return FolderPolicy(category, tag)
+        if (index !in modelTags.indices) return null
+        return FolderPolicy(categories[index], modelTags[index])
     }
 }

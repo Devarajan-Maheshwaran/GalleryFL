@@ -1,32 +1,48 @@
 {
-  "num_classes": 34,
+  "schema_version": 1,
+  "task": "single_label_multiclass",
+  "decision_rule": "argmax",
+  "num_classes": 7,
+  "labels": [
+    "people",
+    "places",
+    "activities",
+    "objects",
+    "documents",
+    "nature",
+    "events"
+  ],
   "layers": [
     {
       "name": "w1",
       "shape": [
         1024,
         256
-      ]
+      ],
+      "dtype": "float32"
     },
     {
       "name": "b1",
       "shape": [
         256
-      ]
+      ],
+      "dtype": "float32"
     },
     {
       "name": "w2",
       "shape": [
         256,
-        34
-      ]
+        7
+      ],
+      "dtype": "float32"
     },
     {
       "name": "b2",
       "shape": [
-        34
-      ]
+        7
+      ],
+      "dtype": "float32"
     }
   ],
-  "taxonomy_version": 1
+  "feature_normalization": "folded_into_w1_b1"
 }

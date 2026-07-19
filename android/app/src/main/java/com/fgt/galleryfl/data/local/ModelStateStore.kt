@@ -1,6 +1,7 @@
 package com.fgt.galleryfl.data.local
 
 import android.content.Context
+import com.fgt.galleryfl.data.taxonomy.TaxonomyConfig
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -20,7 +21,16 @@ object ModelStateStore {
     private const val KEY_VERSION = "model_version"
     private const val FILE_NAME = "fgt_head.bin"
 
+    private fun hasCurrentSchema(weights: List<FloatArray>): Boolean {
+        return weights.size == 4 &&
+            weights[0].size == 1024 * 256 &&
+            weights[1].size == 256 &&
+            weights[2].size == 256 * TaxonomyConfig.NUM_CLASSES &&
+            weights[3].size == TaxonomyConfig.NUM_CLASSES
+    }
+
     fun saveWeights(context: Context, weights: List<FloatArray>) {
+        require(hasCurrentSchema(weights)) { "Refusing to persist an incompatible GalleryFL head" }
         val file = File(context.filesDir, FILE_NAME)
         file.outputStream().use { out ->
             val header = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
@@ -55,7 +65,11 @@ object ModelStateStore {
                     for (j in 0 until size) arr[j] = fbBuf.getFloat()
                     result.add(arr)
                 }
-                if (result.size == 4) result else null
+                if (hasCurrentSchema(result)) result else {
+                    // Discard persisted 34-leaf heads from older app versions.
+                    file.delete()
+                    null
+                }
             }
         } catch (_: Exception) {
             null

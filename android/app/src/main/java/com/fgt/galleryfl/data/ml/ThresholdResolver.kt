@@ -7,8 +7,8 @@ class ThresholdResolver(private val feedbackStore: FeedbackStore) {
 
     suspend fun getThresholdForClass(classIndex: Int, fallbackThreshold: Float = 0.5f): Float {
         // 2. taxonomy default threshold
-        val defaultThreshold = if (classIndex >= 0 && classIndex < TaxonomyConfig.leafTags.size) {
-            TaxonomyConfig.leafTags[classIndex].defaultThreshold
+        val defaultThreshold = if (classIndex >= 0 && classIndex < TaxonomyConfig.modelTags.size) {
+            TaxonomyConfig.modelTags[classIndex].defaultThreshold
         } else {
             // 3. safe fallback threshold
             fallbackThreshold

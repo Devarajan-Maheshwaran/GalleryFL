@@ -56,7 +56,9 @@ class LocalTrainer(
         val globalB2 = globalWeights[3].copyOf()
 
         val n = featuresList.size
-        val useDP = dpEpsilon > 0f && n > 0
+        require(n > 0) { "Local training requires at least one sample" }
+        require(targetsList.size == n) { "Features and targets must have equal size" }
+        val useDP = dpEpsilon > 0f
         val gradNormBuf = FloatArray(n)
 
         for (epoch in 0 until epochs) {
@@ -140,21 +142,15 @@ class LocalTrainer(
             }
         }
 
-        // Final BCE loss + strict multi-label accuracy (reporting only).
+        // Final categorical cross-entropy + top-1 accuracy (reporting only).
         var totalLoss = 0f
         var correct = 0
         for (i in 0 until n) {
-            val preds = head.forward(featuresList[i])
-            val targets = targetsList[i]
-            var sampleLoss = 0f
-            var isCorrect = true
-            for (c in 0 until targets.size) {
-                val p = preds[c].coerceIn(1e-7f, 1f - 1e-7f)
-                sampleLoss -= targets[c] * ln(p) + (1 - targets[c]) * ln(1 - p)
-                if ((if (p > 0.5f) 1f else 0f) != targets[c]) isCorrect = false
-            }
-            totalLoss += sampleLoss / targets.size
-            if (isCorrect) correct++
+            val probabilities = head.forward(featuresList[i])
+            val targetClass = targetsList[i].indices.maxByOrNull { targetsList[i][it] } ?: 0
+            val predictedClass = probabilities.indices.maxByOrNull { probabilities[it] } ?: 0
+            totalLoss -= ln(probabilities[targetClass].coerceIn(1e-7f, 1f))
+            if (predictedClass == targetClass) correct++
         }
 
         return TrainingResult(

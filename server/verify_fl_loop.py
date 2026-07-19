@@ -1,8 +1,8 @@
 """
 FGT FL-loop verification client (Phase 1).
 VERIFICATION ARTIFACT (not a release artifact). Mirrors the Android
-LocalTrainer math (forward/backward, BCE, FedProx, delta L2-clip, Gaussian DP
-noise) and drives a full multi-round session over REST + WebSocket to prove
+LocalTrainer math (softmax cross-entropy, FedProx, per-example DP-SGD) and
+drives a full multi-round session over REST + WebSocket to prove
 the server core loop works end-to-end.
 
 Correct flow (matches Android): clients register + open WS FIRST, then the
@@ -24,7 +24,7 @@ TOKEN = "2c79bdfe"
 BASE = "http://localhost:8000"
 WS = "ws://localhost:8000/ws/feed"
 NUM_CLIENTS = 4
-NUM_CLASSES = 34
+NUM_CLASSES = model_manager.NUM_CLASSES
 
 # Generous client-side timeouts + retry so a transient sandbox network blip
 # (e.g. httpx.ReadError between rounds) does not abort an otherwise-healthy run.
@@ -84,20 +84,17 @@ def make_dataset(client_idx, n_samples=300, seed=None):
     rs = np.random.default_rng(seed)
     X = rs.standard_normal((n_samples, 1024)).astype(np.float32)
     logits = X @ W_true + b_true
-    Y = (1.0 / (1.0 + np.exp(-logits)) > 0.5).astype(np.float32)
-    # NOTE: we intentionally do NOT mask Y per-client here. Masking creates a
-    # label-distribution mismatch (each client sees only its classes as
-    # positive, so the aggregate head is biased toward predicting 0) that made
-    # the held-out probe F1 collapse. The held-out probe (output/fl_probe.npz)
-    # uses the same full-label distribution, so training and evaluation are
-    # now consistent: a head that fits the training data also scores well on
-    # the probe. Light non-IIDness comes from each client drawing a different
-    # random sample of the same distribution.
+    classes = np.argmax(logits, axis=1)
+    Y = np.eye(NUM_CLASSES, dtype=np.float32)[classes]
+    # Light non-IIDness comes from each client drawing a different sample of
+    # the same seven-parent categorical distribution.
     return X, Y
 
 
-def sigmoid(x):
-    return 1.0 / (1.0 + np.exp(-x))
+def softmax(x):
+    shifted = x - np.max(x, axis=1, keepdims=True)
+    exp_x = np.exp(shifted)
+    return exp_x / exp_x.sum(axis=1, keepdims=True)
 
 
 def local_train(global_weights, X, Y, epochs=3, lr=0.001, mu=0.01,
@@ -118,7 +115,7 @@ def local_train(global_weights, X, Y, epochs=3, lr=0.001, mu=0.01,
         Z1 = X @ w1 + b1
         A1 = np.maximum(0.0, Z1)
         Z2 = A1 @ w2 + b2
-        Pp = sigmoid(Z2)
+        Pp = softmax(Z2)
         dZ2 = Pp - Y
         dW2 = np.einsum('ni,nj->nij', A1, dZ2)
         db2 = dZ2
@@ -151,10 +148,11 @@ def local_train(global_weights, X, Y, epochs=3, lr=0.001, mu=0.01,
     Z1 = X @ w1 + b1
     A1 = np.maximum(0.0, Z1)
     Z2 = A1 @ w2 + b2
-    Pp = sigmoid(Z2)
-    pc = np.clip(Pp, 1e-7, 1 - 1e-7)
-    loss = -float(np.mean(Y * np.log(pc) + (1 - Y) * np.log(1 - pc)))
-    acc = float(np.all((Pp > 0.5).astype(int) == Y.astype(int), axis=1).mean())
+    Pp = softmax(Z2)
+    pc = np.clip(Pp, 1e-7, 1.0)
+    target_classes = np.argmax(Y, axis=1)
+    loss = -float(np.log(pc[np.arange(n), target_classes]).mean())
+    acc = float((np.argmax(Pp, axis=1) == target_classes).mean())
     return [w1, b1, w2, b2], n, loss, acc
 
 
@@ -275,20 +273,9 @@ async def main():
                   f"{accs[-1]-accs[0]:+.4f} "
                   f"(first={accs[0]:.4f}, last={accs[-1]:.4f})")
 
-        # Export a deterministic held-out probe labelled by the ground-truth
-        # weights (W_true) the clients trained on, so the TF-free server-side
-        # evaluator (prep_eval.py) can report a meaningful baseline->federated
-        # F1 delta instead of scoring against an unrelated random probe.
-        rng_h = np.random.default_rng(98765)
-        Xh = rng_h.standard_normal((2000, 1024)).astype(np.float32)
-        logits_h = Xh @ W_true + b_true
-        Yh = (1.0 / (1.0 + np.exp(-logits_h)) > 0.5).astype(np.float32)
-        os.makedirs("output", exist_ok=True)
-        np.savez("output/fl_probe.npz", X=Xh, Y=Yh)
-        print(f"[probe] exported output/fl_probe.npz "
-              f"(X={Xh.shape}, Y positives/class ~ {int(Yh.sum(0).mean())})")
+        # If evaluate.py created a held-out feature cache, surface the populated
+        # baseline/federated comparison. Otherwise the dashboard stays honest.
 
-        # If a server-side evaluator is wired in, surface the populated charts.
         try:
             comp = (await _get_with_retry(hc, f"{BASE}/api/metrics/comparison")).json()
             print(f"[comparison] evaluated={comp.get('evaluated')} "

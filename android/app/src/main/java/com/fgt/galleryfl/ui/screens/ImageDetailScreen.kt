@@ -120,11 +120,11 @@ fun ImageDetailScreen(
                 head.setWeightsFlat(activeWeights)
                 val preds = head.forward(features.projection)
                 val topClass = preds.indices.maxByOrNull { preds[it] } ?: -1
-                val name = if (topClass >= 0) TaxonomyConfig.leafTags.getOrNull(topClass)?.name else null
+                val tag = if (topClass >= 0) TaxonomyConfig.modelTags.getOrNull(topClass) else null
                 withContext(Dispatchers.Main) {
                     predictedClassIndex = topClass
-                    predictedTag = name
-                    name?.let { TagSignalSender.emit(listOf(it)) }
+                    predictedTag = tag?.name
+                    tag?.id?.let { TagSignalSender.emit(listOf(it)) }
                 }
             } catch (_: Exception) {
                 // Prediction is best-effort; ignore failures.

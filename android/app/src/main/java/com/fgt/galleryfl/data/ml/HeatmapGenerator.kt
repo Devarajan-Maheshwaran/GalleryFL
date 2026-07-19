@@ -13,7 +13,7 @@ class HeatmapGenerator(private val classificationHead: ClassificationHead) {
      */
     fun generateHeatmap(spatialMap: FloatArray, targetClassIndex: Int): Array<FloatArray> {
         val w1 = classificationHead.w1 // Shape: 1024 x 256
-        val w2 = classificationHead.w2 // Shape: 256 x 34
+        val w2 = classificationHead.w2 // Shape: 256 x 7 parent classes
         
         // 1. Compute the backward linear projection from class score to the 1024-dim features
         // We want the gradient of the class score with respect to the 1024-dim input of ClassificationHead

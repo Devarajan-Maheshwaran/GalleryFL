@@ -156,15 +156,25 @@ class FLCoordinator:
             # second time here is not FedProx and double-regularises updates.
             self.model_manager.update_global_weights(aggregated)
 
-            # REAL per-round quality: evaluate the freshly aggregated head on the
-            # held-out probe (TF-free numpy forward pass) and use *those* numbers
-            # for the dashboard's accuracy/loss charts. Previously we averaged
-            # each client's self-reported training metrics, which were flat and
-            # made the charts look constant/wrongly wired.
+            # Prefer a real held-out, TF-free evaluation of the freshly
+            # aggregated head. evaluate.py creates the raw-feature cache once.
+            # If the operator has not evaluated a dataset yet, fall back to
+            # sample-weighted client metrics instead of publishing fake zeros.
             eval_result = await asyncio.to_thread(self._run_evaluation)
-            avg_loss = float(eval_result.get("loss", 0.0))
-            avg_acc = float(eval_result.get("macro_f1", 0.0))
             total_samples = sum(m.get("num_samples", 0) for m in self.client_metadata.values())
+            if eval_result.get("available"):
+                avg_loss = float(eval_result["loss"])
+                avg_acc = float(eval_result["macro_f1"])
+            else:
+                denominator = max(total_samples, 1)
+                avg_loss = sum(
+                    float(m.get("local_loss", 0.0)) * int(m.get("num_samples", 0))
+                    for m in self.client_metadata.values()
+                ) / denominator
+                avg_acc = sum(
+                    float(m.get("local_accuracy", 0.0)) * int(m.get("num_samples", 0))
+                    for m in self.client_metadata.values()
+                ) / denominator
             metrics = RoundMetrics(
                 round=self.current_round, timestamp=time.time(), num_clients=num_updates,
                 global_loss=avg_loss, global_accuracy=avg_acc, total_samples=total_samples,
@@ -242,39 +252,62 @@ class FLCoordinator:
         return aggregated
 
     def _run_evaluation(self) -> dict:
-        """Run the TF-free server-side head evaluation and return real metrics.
+        """Evaluate the active four-tensor head on cached held-out raw features.
 
-        prep_eval.py mirrors the Android head forward pass in pure numpy (no
-        TensorFlow) and writes output/latest_eval.json + output/
-        bootstrap_eval_report.json (real per-class F1 + a genuine BCE loss).
-        We run it synchronously inside a worker thread (see caller) and read
-        the result back so the round metrics reflect the *actual* model, not
-        client self-reports.
+        ``server/retrain/evaluate.py`` creates ``output/retrain/test_features.npz``
+        with the exact frozen-backbone features used for the baseline test. The
+        deployed head has train normalization folded into w1/b1, so this pure
+        NumPy path is also the Android inference graph. No deleted retrain script
+        or TensorFlow runtime is involved.
         """
-        import json as _json
-        import subprocess
-        import sys
+        import json
+        from retrain.config import LABELS
+        from retrain.pipeline import (
+            atomic_write_json,
+            cross_entropy,
+            forward_logits,
+            multiclass_metrics,
+            softmax,
+        )
 
-        result = {"loss": 0.0, "macro_f1": 0.0, "accuracy": 0.0}
+        server_dir = os.path.dirname(os.path.abspath(__file__))
+        cache_path = os.path.join(server_dir, "output", "retrain", "test_features.npz")
+        if not os.path.exists(cache_path):
+            logging.info("Held-out feature cache not found; run server/retrain/evaluate.py")
+            return {"available": False}
+
         try:
-            logging.info("Running server-side head evaluation (prep_eval.py)...")
-            subprocess.run(
-                [sys.executable, "prep_eval.py"],
-                cwd=os.path.dirname(os.path.abspath(__file__)),
-                check=False,
-                timeout=120,
+            with np.load(cache_path, allow_pickle=False) as cache:
+                features = np.asarray(cache["features"], dtype=np.float32)
+                labels = np.asarray(cache["labels"], dtype=np.int64)
+                cached_names = tuple(str(value) for value in cache["label_names"].tolist())
+            if cached_names != LABELS:
+                raise ValueError(f"cache labels {cached_names} do not match runtime labels {LABELS}")
+
+            w1, b1, w2, b2 = self.model_manager.global_weights
+            probabilities = softmax(forward_logits(features, w1, b1, w2, b2))
+            report = multiclass_metrics(labels, probabilities)
+            report.update({
+                "schema_version": 1,
+                "task": "single_label_multiclass",
+                "decision_rule": "argmax",
+                "labels": list(LABELS),
+                "loss": cross_entropy(labels, probabilities),
+                "available": True,
+                "model_version": self.model_manager.current_version,
+            })
+            eval_path = os.path.join(server_dir, "output", "latest_eval.json")
+            atomic_write_json(eval_path, report)
+            logging.info(
+                "Held-out eval -> loss=%.4f macro_f1=%.4f accuracy=%.4f",
+                report["loss"],
+                report["macro_f1"],
+                report["accuracy"],
             )
-            eval_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output", "latest_eval.json")
-            if os.path.exists(eval_path):
-                with open(eval_path, "r") as f:
-                    data = _json.load(f)
-                result["loss"] = float(data.get("loss", 0.0))
-                result["macro_f1"] = float(data.get("macro_f1", 0.0))
-                result["accuracy"] = float(data.get("accuracy", 0.0))
-                logging.info(f"Eval -> loss={result['loss']:.4f} macro_f1={result['macro_f1']:.4f}")
-        except Exception as e:
-            logging.error(f"Evaluation failed: {e}")
-        return result
+            return report
+        except Exception as exc:
+            logging.error("Held-out evaluation failed: %s", exc)
+            return {"available": False}
 
     async def on_client_disconnected(self, client_id: str) -> None:
         if client_id in self.round_participants:

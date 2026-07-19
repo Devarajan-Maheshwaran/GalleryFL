@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "task": "single_label_multiclass",
+  "labels": [
+    "people",
+    "places",
+    "activities",
+    "objects",
+    "documents",
+    "nature",
+    "events"
+  ],
+  "decision_rule": "argmax",
+  "confidence_gate_semantics": "optional abstention after argmax; never used to create multi-label predictions",
+  "confidence_thresholds": {
+    "people": 0.0,
+    "places": 0.0,
+    "activities": 0.0,
+    "objects": 0.0,
+    "documents": 0.0,
+    "nature": 0.0,
+    "events": 0.0
+  }
+}

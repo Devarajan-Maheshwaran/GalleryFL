@@ -1,111 +1,168 @@
 #!/usr/bin/env python3
-"""
-evaluate.py - Clean single-label evaluation for 7-parent GalleryFL head.
+"""Evaluate a checkpoint on a held-out single-label test manifest."""
 
-- Uses argmax (top-1) for predictions
-- Consistent with training (softmax)
-- Supports test manifest
-- Saves metrics + default thresholds
-"""
+from __future__ import annotations
 
 import argparse
-import csv
-import json
-import os
+from pathlib import Path
+
 import numpy as np
-from sklearn.metrics import f1_score, precision_recall_fscore_support
 
-import sys
-sys.path.insert(0, os.path.dirname(__file__))
-from config import LABELS, NUM_CLASSES, LABEL_TO_IDX, BEST_CHECKPOINT, METRICS_PATH, THRESHOLDS_PATH
+from backbone import FrozenBackbone
+from config import (
+    EVAL_FEATURES_PATH,
+    HISTORICAL_MACRO_F1,
+    LABELS,
+    MIN_ACCEPTABLE_TEST_MACRO_F1,
+    NUM_CLASSES,
+    OUTPUT_DIR,
+    PROJECT_DIR,
+    TEST_METRICS_PATH,
+    THRESHOLDS_PATH,
+    ensure_output_dirs,
+)
+from pipeline import (
+    PipelineError,
+    atomic_save_npz,
+    atomic_write_json,
+    cross_entropy,
+    default_threshold_payload,
+    file_sha256,
+    fold_feature_standardization,
+    forward_logits,
+    load_checkpoint,
+    load_manifest,
+    multiclass_metrics,
+    softmax,
+    standardize,
+)
 
-def load_checkpoint(path):
-    d = np.load(path)
-    return d["w1"], d["b1"], d["w2"], d["b2"]
 
-def forward_softmax(X, w1, b1, w2, b2):
-    """Pure numpy forward pass matching the trained head (1024→256→7 softmax)"""
-    z1 = X @ w1 + b1
-    a1 = np.maximum(0.0, z1)
-    z2 = a1 @ w2 + b2
-    # numerically stable softmax
-    z2 = z2 - np.max(z2, axis=1, keepdims=True)
-    exp_z = np.exp(z2)
-    return exp_z / np.sum(exp_z, axis=1, keepdims=True)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--test-manifest", type=Path, required=True)
+    parser.add_argument("--dataset-dir", type=Path, required=True)
+    parser.add_argument(
+        "--minimum-macro-f1",
+        type=float,
+        default=MIN_ACCEPTABLE_TEST_MACRO_F1,
+        help="write the report but exit non-zero if the held-out score is below this value",
+    )
+    return parser.parse_args()
 
-def load_test_data(manifest_path):
-    items = []
-    with open(manifest_path) as f:
-        for row in csv.DictReader(f):
-            lbl = row["label"].strip().lower()
-            if lbl in LABEL_TO_IDX:
-                items.append((row["image_path"], LABEL_TO_IDX[lbl]))
-    return items
 
-def compute_metrics(y_true, y_pred):
-    macro_f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
-    acc = float(np.mean(y_pred == y_true))
+def main() -> int:
+    args = parse_args()
+    ensure_output_dirs()
+    dataset_dir = args.dataset_dir.expanduser().resolve()
+    items = load_manifest(args.test_manifest, dataset_dir)
+    labels = np.asarray([item.label for item in items], dtype=np.int64)
+    missing = [LABELS[index] for index in range(NUM_CLASSES) if not np.any(labels == index)]
+    if missing:
+        raise PipelineError(f"Test manifest has no samples for: {', '.join(missing)}")
 
-    per_class = {}
-    p, r, f1, support = precision_recall_fscore_support(y_true, y_pred, labels=range(NUM_CLASSES), zero_division=0)
+    checkpoint_path = args.checkpoint.expanduser().resolve()
+    checkpoint = load_checkpoint(checkpoint_path)
+    backbone = FrozenBackbone()
+    raw_features = backbone.extract([item.path for item in items], "test")
+    normalized_features = standardize(
+        raw_features,
+        checkpoint["feature_mean"],
+        checkpoint["feature_std"],
+    )
+    normalized_logits = forward_logits(
+        normalized_features,
+        checkpoint["w1"],
+        checkpoint["b1"],
+        checkpoint["w2"],
+        checkpoint["b2"],
+    )
+    probabilities = softmax(normalized_logits)
 
-    for c in range(NUM_CLASSES):
-        per_class[LABELS[c]] = {
-            "f1": round(float(f1[c]), 4),
-            "precision": round(float(p[c]), 4),
-            "recall": round(float(r[c]), 4),
-            "support": int(support[c])
-        }
+    # Prove that the four exported tensors produce the same result on raw
+    # Android backbone features after normalization is folded into layer one.
+    folded_w1, folded_b1 = fold_feature_standardization(
+        checkpoint["w1"],
+        checkpoint["b1"],
+        checkpoint["feature_mean"],
+        checkpoint["feature_std"],
+    )
+    deployment_logits = forward_logits(
+        raw_features,
+        folded_w1,
+        folded_b1,
+        checkpoint["w2"],
+        checkpoint["b2"],
+    )
+    max_export_error = float(np.max(np.abs(normalized_logits - deployment_logits)))
+    if max_export_error > 2e-3:
+        raise PipelineError(
+            f"Normalization folding changed logits by {max_export_error}; refusing evaluation"
+        )
 
-    return {
-        "macro_f1": round(macro_f1, 4),
-        "accuracy": round(acc, 4),
-        "per_class": per_class
+    report = multiclass_metrics(labels, probabilities)
+    report["cross_entropy"] = cross_entropy(labels, probabilities)
+    payload = {
+        "schema_version": 1,
+        "task": "single_label_multiclass",
+        "decision_rule": "argmax",
+        "labels": list(LABELS),
+        **report,
+        "checkpoint": (
+            checkpoint_path.relative_to(PROJECT_DIR).as_posix()
+            if checkpoint_path.is_relative_to(PROJECT_DIR)
+            else checkpoint_path.name
+        ),
+        "checkpoint_sha256": file_sha256(checkpoint_path),
+        "test_manifest": "$DATASET_DIR/manifests/test.csv",
+        "dataset": {
+            "name": "COCO Minitrain 10K" if (dataset_dir / "labels" / "train2017").is_dir() else "external seven-parent gallery dataset",
+            "source": "https://www.kaggle.com/datasets/banuprasadb/coco-minitrain-10k" if (dataset_dir / "labels" / "train2017").is_dir() else None,
+        },
+        "backbone_sha256": backbone.sha256,
+        "deployment_equivalence_max_abs_logit_error": max_export_error,
+        "comparison": {
+            "old_test_macro_f1": HISTORICAL_MACRO_F1,
+            "old_test_accuracy": None,
+            "new_test_macro_f1": report["macro_f1"],
+            "new_test_accuracy": report["accuracy"],
+            "macro_f1_delta": report["macro_f1"] - HISTORICAL_MACRO_F1,
+            "note": "Historical accuracy was not present in the repository, so it is not fabricated.",
+        },
     }
+    atomic_write_json(TEST_METRICS_PATH, payload)
+    atomic_write_json(OUTPUT_DIR.parent / "bootstrap_eval_report.json", payload)
+    atomic_write_json(THRESHOLDS_PATH, default_threshold_payload())
+    atomic_save_npz(
+        EVAL_FEATURES_PATH,
+        features=raw_features.astype(np.float32),
+        labels=labels.astype(np.int64),
+        label_names=np.asarray(LABELS),
+        backbone_sha256=np.asarray(backbone.sha256),
+    )
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", default=BEST_CHECKPOINT)
-    parser.add_argument("--test-manifest", required=True)
-    parser.add_argument("--dataset-dir", default=None)
-    args = parser.parse_args()
+    print(f"test macro F1: {report['macro_f1']:.4f}")
+    print(f"test accuracy: {report['accuracy']:.4f}")
+    print("per-class metrics:")
+    for label in LABELS:
+        metrics = report["per_class"][label]
+        print(
+            f"  {label:12s} precision={metrics['precision']:.4f} "
+            f"recall={metrics['recall']:.4f} f1={metrics['f1']:.4f} "
+            f"support={metrics['support']}"
+        )
+    print(f"report: {TEST_METRICS_PATH}")
 
-    print("=== 7-Parent GalleryFL Evaluation (Single-Label, argmax) ===")
+    if report["macro_f1"] < args.minimum_macro_f1:
+        print(
+            f"QUALITY GATE FAILED: macro F1 {report['macro_f1']:.4f} is below "
+            f"{args.minimum_macro_f1:.4f}. Do not export this checkpoint."
+        )
+        return 2
+    print("quality gate passed")
+    return 0
 
-    w1, b1, w2, b2 = load_checkpoint(args.checkpoint)
-
-    items = load_test_data(args.test_manifest)
-    print(f"[eval] Loaded {len(items)} samples from manifest")
-
-    # Extract features using train's extractor (keeps backbone consistent)
-    from train import load_backbone, extract_features
-    interp, inp, out = load_backbone()
-    paths = [p for p, _ in items]
-    X = extract_features(interp, inp, out, paths)
-
-    labels = np.array([lbl for _, lbl in items])
-
-    probs = forward_softmax(X, w1, b1, w2, b2)
-    preds = np.argmax(probs, axis=1)
-
-    report = compute_metrics(labels, preds)
-
-    print(f"\nMacro F1: {report['macro_f1']:.4f}")
-    print(f"Accuracy: {report['accuracy']:.4f}")
-    print("Per-class:")
-    for name, m in report["per_class"].items():
-        print(f"  {name:12s} F1={m['f1']:.4f}  P={m['precision']:.4f}  R={m['recall']:.4f}  support={m['support']}")
-
-    os.makedirs(os.path.dirname(METRICS_PATH), exist_ok=True)
-    with open(METRICS_PATH, "w") as f:
-        json.dump(report, f, indent=2)
-    print(f"\nReport saved to {METRICS_PATH}")
-
-    # Always write sensible default thresholds for 7-class (argmax primary)
-    default_thresh = {lbl: 0.5 for lbl in LABELS}
-    with open(THRESHOLDS_PATH, "w") as f:
-        json.dump(default_thresh, f, indent=2)
-    print(f"Thresholds written to {THRESHOLDS_PATH}")
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

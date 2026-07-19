@@ -31,7 +31,9 @@ from tag_demand import TagDemandStore
 tag_demand = TagDemandStore()
 try:
     _TAX = TaxonomyParser()
-    _VALID_TAGS = set(_TAX.leaf_names)
+    # Detailed leaf tags remain valid demand signals; parent labels are the
+    # seven outputs of the deployed classifier.
+    _VALID_TAGS = set(_TAX.leaf_names) | set(_TAX.model_labels)
 except Exception:
     _TAX = None
     _VALID_TAGS = set()
@@ -383,7 +385,7 @@ async def get_runtime_config():
     differential-privacy configuration."""
     num_classes = None
     try:
-        num_classes = len(TaxonomyParser().leaf_names)
+        num_classes = TaxonomyParser().num_classes
     except Exception:
         num_classes = None
     return {
@@ -428,6 +430,12 @@ async def get_comparison():
                     tax = json_mod.load(tf)
                 
                 for i, cat in enumerate(categories):
+                    # Current reports are seven-parent single-label reports.
+                    parent_metrics = data.get("per_class", {}).get(cat)
+                    if isinstance(parent_metrics, dict):
+                        scores[i] = float(parent_metrics.get("f1", 0.0))
+                        continue
+                    # Compatibility only for historical 34-leaf reports.
                     cat_node = next((c for c in tax.get("categories", []) if c["id"] == cat), None)
                     if cat_node and "children" in cat_node:
                         leaf_names = cat_node["children"]
@@ -446,10 +454,9 @@ async def get_comparison():
         "categories": categories,
         "baseline": baseline,
         "federated": federated,
-        # Honest signal for the dashboard: until a server-side evaluation has
-        # actually run (prep_model.py evaluate), these numbers are not real
-        # model-quality measurements, so the UI should show an "awaiting
-        # evaluation" state rather than implying 0% accuracy.
+        # Honest signal for the dashboard: until server/retrain/evaluate.py has
+        # produced a held-out report and the FL evaluator has produced a current
+        # report, the UI should show "awaiting evaluation" rather than fake 0s.
         "evaluated": evaluated
     }
 

@@ -1,70 +1,57 @@
-# 7-Parent GalleryFL Retrain - Surgical Audit & Fixes (2026-07-19)
+# Retrain truth map and surgical changes
 
-## 1. Truth Map of Old Files (before rewrite)
+## Truth map at the start of this fix
 
-| File                  | Status          | Problem |
-|-----------------------|-----------------|---------|
-| config.py             | Mostly OK       | Had LABEL_SMOOTHING that was causing TF errors |
-| prepare_dataset.py    | Good            | Correct stratified split + manifest writer |
-| train.py              | Broken          | Weak manual F1, no early stopping on real metric, label_smoothing crash, fragile layer extraction, no sklearn |
-| evaluate.py           | Broken          | Mixed forward (some sigmoid remnants in history), weak metrics |
-| export_model.py       | Fragile         | SameFileError on thresholds, inconsistent defaults |
-| convert_*.py / *.ps1 / *.md | Obsolete | Removed (not part of core pipeline) |
+| Item | Truth | Action |
+|---|---|---|
+| `prepare_dataset.py` | Basic per-class split was directionally correct, but it allowed empty class splits, absolute-only manifests, duplicate leakage, and missing classes. | Rewritten with deterministic non-empty stratified splits, portable paths, and duplicate/conflict checks. |
+| `train.py` | Used Keras and class weights, but standardized train/validation features and then exported only the unfused dense weights. Runtime received raw features, so the deployed graph did not match training. It also promoted a head before held-out evaluation. | Rewritten as one standard Keras `fit` loop with class-weighted cross-entropy, validation argmax macro-F1 checkpointing, patience-based stopping, and no premature deployment. |
+| `evaluate.py` | Buggy: evaluated raw features with a head trained on standardized features. `--dataset-dir` was ignored. | Rewritten; loads checkpoint normalization, uses argmax only, reports all seven classes, proves folded export equivalence, and writes the FL test-feature cache. |
+| `export_model.py` | Copied the incompatible normalized-space weights directly to runtime and did not update the 34-class schema. | Rewritten; folds normalization into `w1/b1`, validates shapes/numerics, atomically writes the exact four runtime tensors, and updates seven-class schema/version/threshold metadata. |
+| `config.py` | Seven labels were correct, but path and output contracts were loose. | Rewritten as the pipeline source of truth. |
+| `thresholds.json` | No tracked or generated file was present. Earlier text claimed that fixed `0.5` thresholds were safe for argmax, which is false: argmax does not use thresholds. | Export now writes explicit single-label/argmax metadata. Optional values are post-argmax abstention gates only. |
+| Metrics reports | No real new held-out report was in the repository. `bootstrap_metrics.json` was obsolete 34-leaf binary-accuracy/AUC history and could not support the requested comparison. | Obsolete report removed. Evaluation generates accuracy, macro metrics, per-class metrics, confusion matrix, and an honest old/new comparison. |
+| Frozen backbone integration | Server model had `[1,1024]` and `[1,7,7,1024]` outputs. Android shipped a different one-output `[1,960]` model while allocating 1024 floats, and its two-output map was reversed for the server model. | Canonical server backbone copied to Android; Android now discovers outputs by shape. |
+| Class contract | Training said seven parents while model schema, fallback head, server taxonomy count, Android taxonomy count, and several tests remained 34 leaves. | Runtime contract is now seven parent classes everywhere; the detailed 34-leaf taxonomy remains available as metadata. |
+| FL round evaluation | `fl_coordinator.py` called deleted `prep_eval.py`. | Replaced with framework-free evaluation over `test_features.npz`, with honest client-metric fallback if no held-out cache exists. |
 
-## 2. What Was Rewritten (Surgical)
+## Removed as obsolete
 
-- **config.py**: Cleaned, removed label_smoothing default, added clear constants + FEATURE_NORM_PATH
-- **train.py**: Full rewrite
-  - Proper TF Keras training loop
-  - Class-weighted SparseCategoricalCrossentropy (single-label)
-  - Early stopping on **val macro F1** (sklearn)
-  - Feature standardization saved
-  - Robust extraction of w1/b1/w2/b2
-  - Saves both best_checkpoint.npz + head_weights.npz
-- **evaluate.py**: Full rewrite
-  - Pure softmax numpy forward
-  - sklearn-based macro/per-class metrics (argmax only)
-  - Always writes thresholds.json + retrain_metrics.json
-- **export_model.py**: Cleaned
-  - Always produces valid 4-layer head
-  - Safe thresholds handling
+- Redundant root retrain audit/plan/summary documents that described deleted
+  34-leaf scripts or claimed unverified scores.
+- `server/models/bootstrap_metrics.json`, a 34-leaf multi-label training history
+  with no macro F1 and no compatible held-out report.
 
-**Files removed (obsolete)**: convert_coco.py, run_*.ps1, *.md (except this new audit)
+No server main module, model manager, Android runtime, base model integration,
+FL serialization path, or required model artifact was deleted.
 
-## 3. New Pipeline Guarantees
+## Architecture and semantics
 
-- Single-label multiclass throughout (7 classes)
-- Argmax for all predictions and F1
-- Class weights handle documents/events imbalance
-- Consistent feature extraction + standardization
-- Head format: exactly `w1(1024,256), b1(256), w2(256,7), b2(7)`
-- model_manager dynamic NUM_CLASSES=7 support already present → no changes needed
+- Frozen canonical GalleryFL TFLite backbone.
+- 1024-D projection -> Dense(256, ReLU) -> Dense(7 logits).
+- Dropout during centralized training only.
+- Class-weighted sparse categorical cross-entropy.
+- Validation checkpoint and early stopping on seven-class macro F1.
+- Held-out test accuracy/F1 computed with one `argmax` per image.
+- Android local head now uses softmax/categorical semantics and one-hot top-1
+  pseudo-labels, matching the centralized seed.
 
-## 4. Commands (unchanged interface)
+## Measured held-out result
 
-```bash
-python prepare_dataset.py --dataset-dir $DATASET_DIR
-python train.py --dataset-dir $DATASET_DIR --epochs 120 --lr 0.0008 --batch-size 32
-python evaluate.py --checkpoint ../output/retrain/best_checkpoint.npz \
-                   --test-manifest $DATASET_DIR/manifests/test.csv \
-                   --dataset-dir $DATASET_DIR
-python export_model.py
-```
+Training was run against the Kaggle **COCO Minitrain 10K** YOLO dataset using
+the explicit proxy map in `prepare_dataset.py`. COCO train2017 supplied 8,501
+train and 1,499 validation examples; untouched COCO val2017 supplied 4,952 test
+examples. The best checkpoint was epoch 38 by validation macro F1.
 
-## 5. Expected Improvement
+| Metric | Old | New held-out test |
+|---|---:|---:|
+| Macro F1 | 0.0330 | **0.3055** |
+| Accuracy | not present in old report | **0.3407** |
 
-Previous runs were ~0.03–0.30 macro F1 (broken loops + forward mismatch).
+Per-class test F1: people 0.3208, places 0.3664, activities 0.3742, objects
+0.3769, documents 0.1516, nature 0.3945, events 0.1541. Full precision, recall,
+confusion matrix, supports, and exact values are in
+`server/output/retrain/test_metrics.json`.
 
-New pipeline (clean TF loop + early stopping on real macro F1 + sklearn) should reach **> 0.25–0.40** on this COCO proxy (still limited by data diversity for documents/events).
-
-## 6. Compatibility
-
-- `head_weights.npz` format unchanged → Android + model_manager load without modification
-- `model_version.txt` bumped to 7
-- `thresholds.json` always produced (0.5 defaults are safe for argmax)
-- No changes to server/main or Android code required
-
-Success condition met if:
-- Training runs without crash
-- Test macro F1 >> 0.1 (ideally >0.25)
-- `python -c "from model_manager import ModelManager; m=ModelManager(); print(m.global_weights[2].shape)"` shows (256, 7)
+The +0.2725 macro-F1 improvement clears the enforced 0.20 export gate. Historical
+accuracy is deliberately `null` because it was not present and is not invented.

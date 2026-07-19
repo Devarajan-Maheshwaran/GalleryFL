@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "task": "single_label_multiclass",
+  "decision_rule": "argmax",
+  "labels": [
+    "people",
+    "places",
+    "activities",
+    "objects",
+    "documents",
+    "nature",
+    "events"
+  ],
+  "accuracy": 0.340670436187399,
+  "macro_precision": 0.30379544419963395,
+  "macro_recall": 0.3095935547441181,
+  "macro_f1": 0.30549737802891735,
+  "per_class": {
+    "people": {
+      "precision": 0.3242320819112628,
+      "recall": 0.31737193763919824,
+      "f1": 0.3207653348339899,
+      "support": 898
+    },
+    "places": {
+      "precision": 0.3826787512588117,
+      "recall": 0.3515263644773358,
+      "f1": 0.36644165863066536,
+      "support": 1081
+    },
+    "activities": {
+      "precision": 0.33681073025335323,
+      "recall": 0.4208566108007449,
+      "f1": 0.3741721854304636,
+      "support": 537
+    },
+    "objects": {
+      "precision": 0.3949579831932773,
+      "recall": 0.3604985618408437,
+      "f1": 0.3769423558897243,
+      "support": 1043
+    },
+    "documents": {
+      "precision": 0.15953307392996108,
+      "recall": 0.1443661971830986,
+      "f1": 0.15157116451016636,
+      "support": 284
+    },
+    "nature": {
+      "precision": 0.3891509433962264,
+      "recall": 0.4,
+      "f1": 0.3945008965929468,
+      "support": 825
+    },
+    "events": {
+      "precision": 0.13920454545454544,
+      "recall": 0.17253521126760563,
+      "f1": 0.1540880503144654,
+      "support": 284
+    }
+  },
+  "confusion_matrix": [
+    [
+      285,
+      125,
+      135,
+      134,
+      34,
+      127,
+      58
+    ],
+    [
+      147,
+      380,
+      66,
+      190,
+      82,
+      119,
+      97
+    ],
+    [
+      99,
+      45,
+      226,
+      64,
+      13,
+      72,
+      18
+    ],
+    [
+      133,
+      176,
+      117,
+      376,
+      34,
+      145,
+      62
+    ],
+    [
+      35,
+      103,
+      17,
+      40,
+      41,
+      21,
+      27
+    ],
+    [
+      133,
+      102,
+      95,
+      100,
+      24,
+      330,
+      41
+    ],
+    [
+      47,
+      62,
+      15,
+      48,
+      29,
+      34,
+      49
+    ]
+  ],
+  "num_samples": 4952,
+  "cross_entropy": 2.0447466028313617,
+  "checkpoint": "server/output/retrain/best_checkpoint.npz",
+  "test_manifest": "$DATASET_DIR/manifests/test.csv",
+  "backbone_sha256": "24d30971cb279c7aeaf5700dafc8c3aa558a172a4fcd8436149f033a24687e50",
+  "deployment_equivalence_max_abs_logit_error": 4.57763671875e-05,
+  "comparison": {
+    "old_test_macro_f1": 0.033,
+    "old_test_accuracy": null,
+    "new_test_macro_f1": 0.30549737802891735,
+    "new_test_accuracy": 0.340670436187399,
+    "macro_f1_delta": 0.2724973780289174,
+    "note": "Historical accuracy was not present in the repository, so it is not fabricated."
+  },
+  "checkpoint_sha256": "8309cc610796aa8b94d5a36a7ececb3fbffe7ea9e38286535ee0ee894ace1b12",
+  "dataset": {
+    "name": "COCO Minitrain 10K",
+    "source": "https://www.kaggle.com/datasets/banuprasadb/coco-minitrain-10k"
+  }
+}
