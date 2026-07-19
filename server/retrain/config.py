@@ -1,62 +1,49 @@
 """
 config.py - Clean configuration for 7-parent GalleryFL retraining.
 
-Single source of truth for dataset and training.
+Single source of truth for the 7-parent single-label classifier.
 """
 
 import os
 from dataclasses import dataclass
 from typing import List
 
-# === DATASET CONFIG (set via env or CLI) ===
-# Expected structure after conversion:
-# DATASET_DIR/
-#   people/ *.jpg
-#   places/
-#   activities/
-#   objects/
-#   documents/
-#   nature/
-#   events/
-DATASET_DIR = os.environ.get(
-    "DATASET_DIR",
-    os.path.join(os.path.dirname(__file__), "..", "..", "data", "gallery_7tag")
-)
-
-# 7 PARENT CATEGORIES (single-label classification target)
+# === 7 PARENT LABELS (single-label multiclass) ===
 LABELS: List[str] = [
-    "people",
-    "places",
-    "activities",
-    "objects",
-    "documents",
-    "nature",
-    "events",
+    "people", "places", "activities", "objects",
+    "documents", "nature", "events"
 ]
 NUM_CLASSES: int = len(LABELS)
 LABEL_TO_IDX = {name: i for i, name in enumerate(LABELS)}
 IDX_TO_LABEL = {i: name for i, name in enumerate(LABELS)}
 
-# Training splits
+# === DATASET ===
+DATASET_DIR = os.environ.get(
+    "DATASET_DIR",
+    os.path.join(os.path.dirname(__file__), "..", "..", "data", "gallery_7tag")
+)
+
+# Manifests (preferred) + folder fallback in prepare_dataset
 TRAIN_SPLIT = 0.70
 VAL_SPLIT = 0.15
 TEST_SPLIT = 0.15
 
-# Model / Training hyperparams
+# === TRAINING HYPERPARAMS (tuned for 7-class COCO proxy) ===
 BATCH_SIZE = 32
-EPOCHS = 100
-LEARNING_RATE = 1e-3
-DROPOUT = 0.4
+EPOCHS = 120
+LEARNING_RATE = 8e-4
+DROPOUT = 0.45
 HIDDEN_SIZE = 256
-LABEL_SMOOTHING = 0.1
 WEIGHT_DECAY = 1e-4
+EARLY_STOP_PATIENCE = 18          # on val macro F1
+EARLY_STOP_MIN_DELTA = 0.002
 
-# Backbone (must be present)
+# === BACKBONE (frozen) ===
 BACKBONE_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "base_model.tflite")
 IMAGE_SIZE = 224
 FEATURE_DIM = 1024
 
-# Output paths
+# === OUTPUT PATHS ===
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "..", "models")
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "output")
 RETRAIN_DIR = os.path.join(OUTPUT_DIR, "retrain")
@@ -66,6 +53,7 @@ BEST_CHECKPOINT = os.path.join(RETRAIN_DIR, "best_checkpoint.npz")
 METRICS_PATH = os.path.join(RETRAIN_DIR, "retrain_metrics.json")
 THRESHOLDS_PATH = os.path.join(RETRAIN_DIR, "thresholds.json")
 MODEL_VERSION_FILE = os.path.join(MODELS_DIR, "model_version.txt")
+FEATURE_NORM_PATH = os.path.join(RETRAIN_DIR, "feature_norm.json")
 
 @dataclass
 class RetrainConfig:
@@ -77,7 +65,7 @@ class RetrainConfig:
     lr: float = LEARNING_RATE
     hidden_size: int = HIDDEN_SIZE
     dropout: float = DROPOUT
-    label_smoothing: float = LABEL_SMOOTHING
+    weight_decay: float = WEIGHT_DECAY
 
     def __post_init__(self):
         if self.labels is None:
@@ -95,5 +83,5 @@ def get_config(overrides=None) -> RetrainConfig:
 
 if __name__ == "__main__":
     print("7-Parent Labels:", LABELS)
+    print("NUM_CLASSES:", NUM_CLASSES)
     print("DATASET_DIR:", DATASET_DIR)
-    print("Expected folders:", LABELS)

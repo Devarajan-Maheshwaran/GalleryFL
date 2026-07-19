@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-export_model.py
+export_model.py - Export the trained 7-parent head for GalleryFL.
 
-Finalize and export the trained 7-parent head for GalleryFL.
-
-Saves:
-- models/head_weights.npz (4-layer format: w1, b1, w2, b2)
-- models/model_version.txt
-- output/retrain/thresholds.json (if available)
+Produces:
+- models/head_weights.npz   (exact 4-layer format: w1, b1, w2, b2)
+- models/model_version.txt  (bumped)
+- output/retrain/thresholds.json (defaults for single-label)
 """
 
 import argparse
@@ -17,7 +15,7 @@ import numpy as np
 
 from config import (
     HEAD_WEIGHTS_PATH, MODEL_VERSION_FILE,
-    BEST_CHECKPOINT, THRESHOLDS_PATH, RETRAIN_DIR
+    BEST_CHECKPOINT, THRESHOLDS_PATH, RETRAIN_DIR, LABELS
 )
 
 def main():
@@ -25,7 +23,7 @@ def main():
     parser.add_argument("--checkpoint", default=BEST_CHECKPOINT)
     args = parser.parse_args()
 
-    print("=== Exporting 7-Parent GalleryFL Head ===")
+    print("=== Exporting 7-Parent GalleryFL Head (single-label) ===")
 
     if not os.path.exists(args.checkpoint):
         print("ERROR: No checkpoint found. Train first.")
@@ -43,43 +41,23 @@ def main():
     if os.path.exists(MODEL_VERSION_FILE):
         try:
             version = int(open(MODEL_VERSION_FILE).read().strip()) + 1
-        except:
+        except Exception:
             pass
     with open(MODEL_VERSION_FILE, "w") as f:
         f.write(str(version))
     print(f"Bumped model version to {version}")
 
-    # === BULLETPROOF THRESHOLDS EXPORT (never SameFileError again) ===
-    import shutil
-    import json as _json
-
+    # Ensure thresholds.json exists (defaults are fine for argmax primary use)
     os.makedirs(RETRAIN_DIR, exist_ok=True)
-    src_thresh = os.path.join(RETRAIN_DIR, "thresholds.json")
+    if not os.path.exists(THRESHOLDS_PATH):
+        thresh = {lbl: 0.5 for lbl in LABELS}
+        with open(THRESHOLDS_PATH, "w") as f:
+            json.dump(thresh, f, indent=2)
+        print(f"Created default {THRESHOLDS_PATH}")
 
-    # Always ensure a thresholds.json exists for 7 parents
-    if not os.path.exists(src_thresh):
-        default_thresh = {
-            "people": 0.5, "places": 0.5, "activities": 0.5,
-            "objects": 0.5, "documents": 0.5, "nature": 0.5, "events": 0.5
-        }
-        with open(src_thresh, "w") as f:
-            _json.dump(default_thresh, f, indent=2)
-        print("[export] Created default thresholds.json (0.5)")
-
-    # Safe copy: only if paths are different
-    try:
-        src_abs = os.path.abspath(src_thresh)
-        dst_abs = os.path.abspath(THRESHOLDS_PATH)
-        if src_abs != dst_abs:
-            shutil.copy2(src_thresh, THRESHOLDS_PATH)
-            print(f"[export] thresholds.json -> {THRESHOLDS_PATH}")
-        else:
-            print("[export] thresholds.json already at production path")
-    except Exception as ex:
-        print(f"[export] Warning copying thresholds: {ex} (safe to ignore for 7-class head)")
-
-    print("\nExport complete. Ready for Android + Server FL.")
+    print("\nExport complete.")
     print(f"Head: {HEAD_WEIGHTS_PATH}")
+    print(f"Version: {MODEL_VERSION_FILE}")
 
 if __name__ == "__main__":
     main()
