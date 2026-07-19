@@ -284,39 +284,34 @@ def main():
     with open(os.path.join(RETRAIN_OUTPUT_DIR, "feature_norm.json"), "w") as f:
         json.dump(norm_stats, f, indent=2)
 
-    # 4. Build small Keras head (stable) - use SOFTMAX + categorical for single-label
-    print("\n[3/4] Building and training head (softmax + categorical)...")
+    # 4. Build small Keras head (stable) - keep sigmoid for GalleryFL compatibility
+    print("\n[3/4] Building and training head (sigmoid + binary/focal)...")
 
     inputs = tf.keras.Input(shape=(FEATURE_DIM,))
     x = tf.keras.layers.Dense(256, activation="relu", kernel_initializer="he_normal")(inputs)
-    x = tf.keras.layers.Dropout(0.4)(x)
+    x = tf.keras.layers.Dropout(0.35)(x)
     x = tf.keras.layers.BatchNormalization()(x)
-    outputs = tf.keras.layers.Dense(NUM_CLASSES, activation="softmax")(x)
+    outputs = tf.keras.layers.Dense(NUM_CLASSES, activation="sigmoid")(x)
     model = tf.keras.Model(inputs, outputs)
 
-    # Convert one-hot to integer labels for categorical crossentropy
-    y_train_int = np.argmax(y_train, axis=1)
-    y_val_int = np.argmax(y_val, axis=1)
-
-    # Strong class weights
-    class_counts = np.bincount(y_train_int, minlength=NUM_CLASSES)
-    total = len(y_train_int)
-    class_weights = total / (NUM_CLASSES * np.maximum(class_counts, 1.0))
-    class_weight_dict = {i: float(w) for i, w in enumerate(class_weights)}
+    # Class weights (inverse frequency)
+    class_counts = np.sum(y_train, axis=0)
+    total = len(y_train)
+    class_weights = (total / (NUM_CLASSES * np.maximum(class_counts, 1.0))).astype(np.float32)
     print("Class weights:", dict(zip(LABELS, np.round(class_weights, 3))))
 
-    # Focal loss for multi-class (better for imbalance)
-    def categorical_focal_loss(gamma=2.0, alpha=0.25):
+    # Focal loss (binary) - good for imbalance on rare classes like documents/events
+    def binary_focal_loss(gamma=2.0, alpha=0.25):
         def loss(y_true, y_pred):
-            y_true = tf.cast(y_true, tf.int32)
-            y_pred = tf.clip_by_value(y_pred, 1e-7, 1.0)
-            loss = -alpha * tf.pow(1.0 - y_pred, gamma) * tf.math.log(y_pred)
-            return tf.reduce_mean(tf.reduce_sum(loss, axis=1))
+            bce = tf.keras.losses.binary_crossentropy(y_true, y_pred)
+            pt = tf.exp(-bce)
+            focal = alpha * tf.pow(1.0 - pt, gamma) * bce
+            return tf.reduce_mean(focal)
         return loss
 
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=cfg.lr, weight_decay=1e-4),
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(),
+        loss=binary_focal_loss(gamma=2.0, alpha=0.25),
         metrics=["accuracy"],
     )
 
