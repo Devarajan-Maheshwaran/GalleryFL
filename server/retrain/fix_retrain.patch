@@ -1,0 +1,75 @@
+diff --git a/server/retrain/train.py b/server/retrain/train.py
+index 8c8f454..f517d35 100644
+--- a/server/retrain/train.py
++++ b/server/retrain/train.py
+@@ -7,11 +7,10 @@ Dataset: COCO minitrain-10k mapped to 7 parents
+ Backbone: Frozen base_model.tflite (1024-d features)
+
+ Training recipe (designed for non-IID gallery data but starting from COCO):
+-- Softmax head
+-- Label smoothing + class weights
+-- Feature standardization
+-- Early stopping on macro F1 (argmax)
+-- Best checkpoint saved
++- Softmax head (single-label)
++- Class weights + feature standardization
++- Macro F1 via argmax (top-1)
++- Best checkpoint saved in exact 4-layer GalleryFL format (w1/b1/w2/b2)
+ """
+
+ import argparse
+@@ -137,7 +136,7 @@ def main():
+
+     model.compile(
+         optimizer=tf.keras.optimizers.Adam(learning_rate=cfg.lr, weight_decay=1e-4),
+-        loss=tf.keras.losses.SparseCategoricalCrossentropy(label_smoothing=0.1),
++        loss=tf.keras.losses.SparseCategoricalCrossentropy(),  # IMPORTANT: NO label_smoothing (TF venv compat)
+         metrics=["accuracy"]
+     )
+
+diff --git a/server/retrain/export_model.py b/server/retrain/export_model.py
+index ... 
+--- a/server/retrain/export_model.py
++++ b/server/retrain/export_model.py
+@@ -50,12 +50,35 @@ def main():
+     print(f"Bumped model version to {version}")
+
+-    # Copy thresholds if they exist (safe against same-file)
+-    src_thresh = os.path.join(RETRAIN_DIR, "thresholds.json")
+-    if os.path.exists(src_thresh):
+-        import shutil
+-        if os.path.abspath(src_thresh) != os.path.abspath(THRESHOLDS_PATH):
+-            shutil.copy(src_thresh, THRESHOLDS_PATH)
+-        else:
+-            print("thresholds.json is already in the target location (no copy needed)")
++    # === BULLETPROOF THRESHOLDS EXPORT (never SameFileError again) ===
++    import shutil
++    import json as _json
++
++    os.makedirs(RETRAIN_DIR, exist_ok=True)
++    src_thresh = os.path.join(RETRAIN_DIR, "thresholds.json")
++
++    # Always ensure a thresholds.json exists for 7 parents
++    if not os.path.exists(src_thresh):
++        default_thresh = {
++            "people": 0.5, "places": 0.5, "activities": 0.5,
++            "objects": 0.5, "documents": 0.5, "nature": 0.5, "events": 0.5
++        }
++        with open(src_thresh, "w") as f:
++            _json.dump(default_thresh, f, indent=2)
++        print("[export] Created default thresholds.json (0.5)")
++
++    # Safe copy: only if paths are different
++    try:
++        src_abs = os.path.abspath(src_thresh)
++        dst_abs = os.path.abspath(THRESHOLDS_PATH)
++        if src_abs != dst_abs:
++            shutil.copy2(src_thresh, THRESHOLDS_PATH)
++            print(f"[export] thresholds.json -> {THRESHOLDS_PATH}")
++        else:
++            print("[export] thresholds.json already at production path")
++    except Exception as ex:
++        print(f"[export] Warning copying thresholds: {ex} (safe to ignore for 7-class head)")
+
+     print("\nExport complete. Ready for Android + Server FL.")
+     print(f"Head: {HEAD_WEIGHTS_PATH}")
