@@ -67,11 +67,11 @@ class AlbumCreator(private val context: Context) {
         }
         return name
     }
-
-    data class AlbumResult(
-        val albumPath: String,
-        val copiedCount: Int,
-        val failedUris: List<Uri>,
-        val newUris: List<Uri>
-    )
 }
+
+data class AlbumResult(
+    val albumPath: String,
+    val copiedCount: Int,
+    val failedUris: List<Uri>,
+    val newUris: List<Uri>
+)

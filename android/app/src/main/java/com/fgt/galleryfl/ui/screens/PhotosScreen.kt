@@ -1,25 +1,33 @@
 package com.fgt.galleryfl.ui.screens
 
+import android.content.Context
+import android.content.Intent
+import android.os.VibrationEffect
+import android.os.Vibrator
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
-import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.fgt.galleryfl.data.local.GalleryImage
 import com.fgt.galleryfl.ui.theme.FGTColors
-import androidx.compose.foundation.shape.RoundedCornerShape
+import kotlin.math.min
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -110,14 +118,14 @@ fun PhotosScreen(
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                items(
+                itemsIndexed(
                     photos,
-                    key = { it.id },
-                    span = { index ->
+                    key = { _, item -> item.id },
+                    span = { index, _ ->
                         val isHighlight = (index + 1) % 12 == 0
-                        GridItemSpan(if (isHighlight) minOf(2, columns) else 1)
+                        GridItemSpan(if (isHighlight) min(2, columns) else 1)
                     }
-                ) { photo ->
+                ) { _, photo ->
                     AsyncImage(
                         model = photo.uri,
                         contentDescription = null,
