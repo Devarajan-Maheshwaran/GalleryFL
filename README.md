@@ -98,6 +98,14 @@ GalleryFL-aggregator.zip.sha256
 
 It contains the FastAPI coordinator, dashboard, runtime model artifacts, validation guard artifact, sanitized configuration, run scripts, release metadata, internal checksums, and this architecture SRS. It excludes Android source, tests, retraining code, credentials, caches, and development reports.
 
+On Windows, install Python 3.11/3.12, extract the archive, and double-click:
+
+```text
+START_GALLERYFL_SERVER.bat
+```
+
+This is the Windows launcher equivalent for the Python server; no separate `.exe` is required.
+
 Rebuild it deterministically from repository root with:
 
 ```powershell

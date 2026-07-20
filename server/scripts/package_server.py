@@ -21,6 +21,8 @@ CORE_FILES = (
     "model_eval.py",
     "model_manager.py",
     "requirements.txt",
+    "START_GALLERYFL_SERVER.bat",
+    "START_GALLERYFL_SERVER.ps1",
     "run_server.bat",
     "run_server.py",
     "run_server.sh",
@@ -57,16 +59,18 @@ Requirements
 - All participating phones and the server on the same trusted LAN
 - At least two connected Android clients for a federated round
 
-Windows PowerShell
-------------------
-  py -3.11 -m venv venv
-  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-  .\\venv\\Scripts\\Activate.ps1
-  python -m pip install --upgrade pip
-  python -m pip install -r requirements.txt
-  python run_server.py
+Windows — easiest start
+-----------------------
+1. Install Python 3.11 or 3.12 from https://www.python.org/downloads/ and select
+   "Add Python to PATH" during installation.
+2. Extract this ZIP completely.
+3. Double-click START_GALLERYFL_SERVER.bat.
+4. Keep the console window open. The dashboard opens automatically.
 
-Or double-click run_server.bat.
+PowerShell alternative
+----------------------
+  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+  .\\START_GALLERYFL_SERVER.ps1
 
 Linux/macOS
 -----------
