@@ -13,6 +13,7 @@ import numpy as np
 from taxonomy_parser import TaxonomyParser, get_model_schema
 
 BASE_DIR = Path(__file__).resolve().parent
+RUNTIME_DATA_DIR = Path(os.environ.get("FGT_DATA_DIR", BASE_DIR)).expanduser().resolve()
 try:
     taxonomy = TaxonomyParser(BASE_DIR / "taxonomy.json")
     CLASS_LABELS = taxonomy.model_labels
@@ -29,7 +30,8 @@ class ModelManager:
     def __init__(self, model_dir: str = "models"):
         model_path = Path(model_dir)
         if not model_path.is_absolute() and model_dir == "models":
-            model_path = BASE_DIR / model_path
+            configured = os.environ.get("FGT_MODEL_DIR")
+            model_path = Path(configured).expanduser() if configured else RUNTIME_DATA_DIR / "models"
         self.model_dir = str(model_path.resolve())
         os.makedirs(self.model_dir, exist_ok=True)
         self.global_weights: List[np.ndarray] = []

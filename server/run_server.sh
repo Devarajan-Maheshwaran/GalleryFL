@@ -26,4 +26,5 @@ elif command -v open > /dev/null; then
 fi
 
 echo "Starting Uvicorn..."
-uvicorn main:app --host 0.0.0.0 --port 8000
+export FGT_PERSIST_CONFIG=1
+python run_server.py

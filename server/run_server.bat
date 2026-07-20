@@ -42,6 +42,7 @@ python -m pip install --disable-pip-version-check -r requirements.txt
 if errorlevel 1 goto :failed
 
 echo [3/3] Starting GalleryFL...
+set "FGT_PERSIST_CONFIG=1"
 echo.
 echo Dashboard: http://localhost:8000/dashboard/
 echo Keep this window open while GalleryFL is running.

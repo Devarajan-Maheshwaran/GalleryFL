@@ -13,6 +13,7 @@ import numpy as np
 import socket
 import base64
 import json
+from pathlib import Path
 from typing import Optional, List
 
 from config import ServerConfig
@@ -45,6 +46,9 @@ class TrainingStartRequest(BaseModel):
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s - %(message)s")
 
+SERVER_DIR = Path(__file__).resolve().parent
+RUNTIME_DATA_DIR = Path(os.environ.get("FGT_DATA_DIR", os.getcwd())).expanduser().resolve()
+
 app = FastAPI(title="FGT Server API")
 
 app.add_middleware(
@@ -55,7 +59,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/dashboard", StaticFiles(directory="dashboard", html=True), name="dashboard")
+app.mount(
+    "/dashboard",
+    StaticFiles(directory=str(SERVER_DIR / "dashboard"), html=True),
+    name="dashboard",
+)
 
 config = ServerConfig.load_or_default()
 metrics_store = MetricsStore()
@@ -376,7 +384,7 @@ async def get_taxonomy():
     """Live taxonomy (categories + leaf tags) so the dashboard and clients can
     render the tag system from the server's source of truth rather than a
     hardcoded UI list."""
-    tax_path = "taxonomy.json"
+    tax_path = str(SERVER_DIR / "taxonomy.json")
     if not os.path.exists(tax_path):
         return {"categories": []}
     try:
@@ -452,7 +460,7 @@ async def get_comparison():
     categories = []
     
     import json as json_mod
-    tax_path = "taxonomy.json"
+    tax_path = str(SERVER_DIR / "taxonomy.json")
     if os.path.exists(tax_path):
         try:
             with open(tax_path, "r") as tf:
@@ -489,8 +497,8 @@ async def get_comparison():
                 logging.error(f"Failed to read real evaluation metrics from {eval_file}: {e}")
         return scores
 
-    baseline_path = "models/baseline_metrics.json"
-    federated_path = "output/latest_eval.json"
+    baseline_path = str(SERVER_DIR / "models" / "baseline_metrics.json")
+    federated_path = str(RUNTIME_DATA_DIR / "output" / "latest_eval.json")
     baseline = compute_scores(baseline_path)
     federated = compute_scores(federated_path)
 

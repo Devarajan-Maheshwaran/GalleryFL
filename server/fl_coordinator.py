@@ -389,7 +389,8 @@ class FLCoordinator:
                 "model_version": model_version if model_version is not None else self.model_manager.current_version,
             })
             if persist:
-                eval_path = os.path.join(server_dir, "output", "latest_eval.json")
+                runtime_dir = os.environ.get("FGT_DATA_DIR", server_dir)
+                eval_path = os.path.join(runtime_dir, "output", "latest_eval.json")
                 atomic_write_json(eval_path, report)
             logging.info(
                 "Held-out eval -> loss=%.4f macro_f1=%.4f accuracy=%.4f",

@@ -31,6 +31,7 @@ Write-Host "[2/3] Installing or checking server dependencies..."
 & .\venv\Scripts\python.exe -m pip install --disable-pip-version-check -r requirements.txt
 
 Write-Host "[3/3] Starting GalleryFL..."
+$env:FGT_PERSIST_CONFIG = "1"
 Write-Host "Dashboard: http://localhost:8000/dashboard/" -ForegroundColor Green
 Write-Host "Keep this window open. Press Ctrl+C to stop the server."
 Start-Process "http://localhost:8000/dashboard/"
