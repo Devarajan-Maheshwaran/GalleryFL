@@ -91,11 +91,10 @@ GalleryFL/
 
 The public central aggregator is distributed as one Windows x64 ZIP:
 
-```text
-GalleryFL-Aggregator-Windows-x64.zip
-```
+- [Download GalleryFL-Aggregator-Windows-x64.zip](https://github.com/Devarajan-Maheshwaran/GalleryFL/releases/latest/download/GalleryFL-Aggregator-Windows-x64.zip)
+- [Download SHA-256 checksum](https://github.com/Devarajan-Maheshwaran/GalleryFL/releases/latest/download/GalleryFL-Aggregator-Windows-x64.zip.sha256)
 
-Its sidecar checksum is `GalleryFL-Aggregator-Windows-x64.zip.sha256`. The archive contains the native launcher:
+Its archive contains the native launcher:
 
 ```text
 GalleryFL-Aggregator.exe
