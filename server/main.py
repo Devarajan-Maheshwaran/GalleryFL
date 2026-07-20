@@ -441,6 +441,7 @@ async def get_runtime_config():
         "pseudo_label_weight": config.pseudo_label_weight,
         "min_local_samples": config.min_local_samples,
         "server_delta_clip_norm": config.server_delta_clip_norm,
+        "min_unlabeled_f1_improvement": config.min_unlabeled_f1_improvement,
         "max_global_f1_drop": config.max_global_f1_drop,
         "num_classes": num_classes,
     }

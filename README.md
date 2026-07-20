@@ -47,7 +47,7 @@ Each FL round:
 6. The phone freezes the first dense layer and fine-tunes only `w2/b2` with categorical cross-entropy, FedProx, fixed per-example clipping, and optional Gaussian local DP.
 7. Only weights and aggregate metadata are sent; images never leave the phone.
 8. The server clips each client delta and performs effective-sample-weighted FedAvg. Human labels count fully; pseudo-labels count at reduced weight.
-9. A held-out validation artifact rejects pseudo-label-only rounds that reduce macro F1. Human-correction rounds receive only a small fixed baseline tolerance for domain adaptation.
+9. A held-out validation artifact commits a pseudo-label-only round only when it strictly improves macro F1. Human-correction rounds receive only a small fixed baseline tolerance for domain adaptation.
 
 Important limitation: unlabelled data alone cannot reveal a semantic category when the initial model is wrong. Confidence-gated self-training can refine a good boundary but can also reinforce mistakes. The correction picker in Image Detail is therefore the trusted learning signal.
 
@@ -63,9 +63,11 @@ Final accuracy:    0.330872
 Accepted rounds:   5 / 10
 ```
 
+A ten-seed re-verification then executed 100 candidate rounds under the same unlabelled Non-IID and DP-enabled conditions. Nine of ten runs finished with positive macro-F1 change; all ten were non-regressing. Mean macro-F1 change was **+0.000885**, mean accuracy change was **+0.000940**, and Flower/project output aggregation differed by at most **5.96e-8**. Without the commit guard, eight of ten runs regressed and mean macro-F1 change was **-0.002542**.
+
 A separate live REST/WebSocket run completed eight rounds with four clients, accepted every submission, advanced model versions, persisted metrics, and broadcast all round events. The production model was restored after the verification run.
 
-These checks prove the implementation and non-regression gate work on the committed validation domain. They do not guarantee improvement on every private gallery distribution.
+These checks prove the implementation and strict improvement gate work on the committed validation domain. They do not guarantee improvement on every private gallery distribution.
 
 ## Repository layout
 

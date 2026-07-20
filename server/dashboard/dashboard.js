@@ -284,6 +284,7 @@ async function refreshConfig() {
       ['Learning Rate', String(c.learning_rate)],
       ['FedProx μ', String(c.mu)],
       ['Pseudo-label Gate', `confidence ≥ ${c.pseudo_label_threshold}, weight ${c.pseudo_label_weight}`],
+      ['Unlabelled Commit Gate', `macro-F1 gain ≥ ${c.min_unlabeled_f1_improvement}`],
     ];
     const mk = arr => arr.map(([k, v]) => `<div class="priv__row"><span class="priv__k">${k}</span><span class="priv__v">${v}</span></div>`).join('');
     document.getElementById('privacy-config').innerHTML = mk(rows);

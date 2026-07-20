@@ -31,6 +31,7 @@ class ServerConfig(BaseModel):
 
     # Robust FedAvg and held-out regression guard.
     server_delta_clip_norm: float = Field(default=1.0, gt=0)
+    min_unlabeled_f1_improvement: float = Field(default=1e-6, ge=0, le=1)
     max_global_f1_drop: float = Field(default=0.01, ge=0, le=1)
     convergence_threshold: float = Field(default=0.001, ge=0)
 

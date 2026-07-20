@@ -256,7 +256,12 @@ class FLCoordinator:
                         deployment_baseline = float(current_eval["macro_f1"])
                     allowed_floor = deployment_baseline - self.config.max_global_f1_drop
                 else:
-                    allowed_floor = float(current_eval["macro_f1"])
+                    # Unlabelled self-training must demonstrate a strict held-out
+                    # improvement; equality is not enough to create a new model.
+                    allowed_floor = (
+                        float(current_eval["macro_f1"])
+                        + self.config.min_unlabeled_f1_improvement
+                    )
                 if float(candidate_eval["macro_f1"]) < allowed_floor:
                     accepted_candidate = False
                     logging.warning(

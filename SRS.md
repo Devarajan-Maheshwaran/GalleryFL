@@ -1,6 +1,6 @@
 # Federated Gallery Tags (FGT) — System and Federated Learning Architecture SRS
 
-**Document version:** 3.0
+**Document version:** 3.1
 
 **Status:** As-implemented specification, verified against repository HEAD
 
@@ -8,7 +8,7 @@
 
 **Primary deployment:** Private local-area network
 
-**Verification baseline:** Git commit `a9a5632` plus the conformance corrections recorded in this revision
+**Verification baseline:** Git commit `2601dbd` plus the multi-seed FL re-verification and strict improvement gate recorded in this revision
 
 ---
 
@@ -411,7 +411,7 @@ With clipping inactive, the project's weighted FedAvg result shall numerically m
 
 Before committing a candidate, the server shall evaluate it on the shipped held-out validation features.
 
-- A pseudo-label-only round must not reduce current held-out macro F1.
+- A pseudo-label-only round must improve current held-out macro F1 by at least `min_unlabeled_f1_improvement`; default `1e-6`. Equality is not enough to create a new model version.
 - A round containing trusted corrections may drop no more than the configured amount below the fixed deployment baseline; default tolerance is 0.01.
 - Rejected candidates shall not increment the model version.
 - The guard measures the proxy validation domain and does not replace real gallery-domain evaluation.
@@ -562,14 +562,27 @@ Scenario:
 - Flower reference FedAvg after project delta clipping.
 - Held-out non-regression gate.
 
-Result:
+Initial representative result:
 
 | Metric | Baseline | Final | Delta |
 |---|---:|---:|---:|
 | Macro F1 | 0.299729 | 0.302369 | +0.002639 |
 | Accuracy | 0.326846 | 0.330872 | +0.004027 |
 
-Five of ten candidate rounds improved and were committed. Regressing rounds were rejected. This validates cautious semi-supervised refinement on the committed proxy domain; the small gain demonstrates why explicit corrections remain necessary.
+A subsequent ten-seed re-verification repeated ten FL rounds per seed (100 candidate rounds total) with the same Non-IID, unlabelled, DP-enabled conditions and compared the project's clipped delta aggregation with Flower on every round:
+
+| Re-verification measure | Result |
+|---|---:|
+| Runs with positive final macro-F1 delta | 9 / 10 |
+| Runs with no final macro-F1 regression | 10 / 10 |
+| Mean macro-F1 delta | +0.000885 |
+| Median macro-F1 delta | +0.000712 |
+| Maximum macro-F1 delta | +0.002616 |
+| Mean accuracy delta | +0.000940 |
+| Strictly improving rounds committed | 9 / 100 candidates |
+| Maximum Flower/project output aggregation error | 5.96e-8 |
+
+For comparison, disabling the commit guard caused 8 of 10 runs to regress, with mean macro-F1 delta `-0.002542` and worst delta `-0.005950`. This establishes two separate facts: confidence-gated unlabelled self-training can produce small real gains, and it is not reliably safe without held-out candidate selection. The shipped strict commit gate is therefore part of the learning algorithm, not merely an observability feature. Explicit corrections remain the primary path to larger domain-relevant improvements.
 
 ### 16.3 Live transport run
 
@@ -581,7 +594,7 @@ The deployed model's held-out macro F1 is 0.3055 versus the historical broken pi
 
 ### 16.5 SRS-to-implementation conformance audit
 
-The version 3.0 audit executed direct assertions over the shipped artifacts and source contract. It passed all of the following checks:
+The version 3.1 audit executed direct assertions over the shipped artifacts and source contract. It passed all of the following checks:
 
 - exactly `README.md` and `SRS.md` remain as Markdown documentation;
 - seven labels and their order agree across taxonomy, schema, Android, and model evaluator;
@@ -630,7 +643,7 @@ At least two clients with different class distributions can complete multiple ro
 
 ### AC-05 Unlabelled safety
 
-Low-confidence examples and negative-only feedback are excluded. Pseudo-label-only candidates cannot reduce held-out macro F1.
+Low-confidence examples and negative-only feedback are excluded. A pseudo-label-only candidate is committed only after a strict held-out macro-F1 improvement.
 
 ### AC-06 Correction learning
 
@@ -678,6 +691,7 @@ Default server FL values:
   "pseudo_label_weight": 0.25,
   "min_local_samples": 8,
   "server_delta_clip_norm": 1.0,
+  "min_unlabeled_f1_improvement": 0.000001,
   "max_global_f1_drop": 0.01
 }
 ```
