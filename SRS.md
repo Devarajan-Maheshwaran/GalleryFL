@@ -1,6 +1,6 @@
 # Federated Gallery Tags (FGT) — System and Federated Learning Architecture SRS
 
-**Document version:** 3.1
+**Document version:** 3.2
 
 **Status:** As-implemented specification, verified against repository HEAD
 
@@ -8,7 +8,7 @@
 
 **Primary deployment:** Private local-area network
 
-**Verification baseline:** Git commit `2601dbd` plus the multi-seed FL re-verification and strict improvement gate recorded in this revision
+**Verification baseline:** FL commit `b9db8b7`, Windows build source commit `02a3d33`, and GitHub Actions smoke-test run `29736282792`
 
 ---
 
@@ -430,7 +430,7 @@ The dashboard shall display server connectivity, online clients, model version, 
 
 ### FR-S12 Public aggregator package
 
-The repository shall provide a server-only `GalleryFL-aggregator.zip` suitable for public distribution. The archive shall include only the coordinator runtime, dashboard, required model and validation artifacts, sanitized configuration, run scripts, release metadata, checksums, and this SRS. It shall exclude Android source, tests, retraining scripts, credentials, generated runtime output, virtual environments, and caches. A sidecar SHA-256 file shall authenticate the complete archive.
+The repository shall provide one server-only Windows x64 archive, `GalleryFL-Aggregator-Windows-x64.zip`, suitable for public distribution. It shall contain `GalleryFL-Aggregator.exe`, its private embedded Python runtime, dashboard, required model and validation artifacts, sanitized configuration, third-party package inventory, release documentation, internal checksums, and this SRS. Public users shall not require Python or source code. The archive shall exclude Android source, tests, retraining scripts, credentials, generated runtime output, virtual environments, and caches. A sidecar SHA-256 file shall authenticate the complete archive.
 
 ## 11. Wire protocol
 
@@ -598,7 +598,7 @@ The deployed model's held-out macro F1 is 0.3055 versus the historical broken pi
 
 ### 16.5 SRS-to-implementation conformance audit
 
-The version 3.1 audit executed direct assertions over the shipped artifacts and source contract. It passed all of the following checks:
+The version 3.2 audit executed direct assertions over the shipped artifacts and source contract. It passed all of the following checks:
 
 - exactly `README.md` and `SRS.md` remain as Markdown documentation;
 - seven labels and their order agree across taxonomy, schema, Android, and model evaluator;
@@ -626,6 +626,7 @@ Audit result: **IMPLEMENTATION_CONFORMANCE_PASS**.
 6. Secure aggregation is not implemented.
 7. At least two devices are required for a federated round.
 8. A single-server LAN deployment has no high-availability design.
+9. The public Windows executable is reproducibly built and checksum-verified but not Authenticode-signed; a production publisher should add an EV/OV code-signing certificate to reduce SmartScreen warnings.
 
 ## 18. Acceptance criteria
 
@@ -679,7 +680,7 @@ The Android project targets SDK 36 and compiles with JDK 21 in an environment wi
 
 ### AC-13 Public aggregator release
 
-The public aggregator ZIP contains no Android source, tests, retraining code, cache, virtual environment, or persisted credential. Every internal file passes `SHA256SUMS.txt`, the sidecar archive checksum matches, and an extracted clean package starts successfully with a newly generated token, seven-class schema, model version 2, and populated baseline comparison.
+The public Windows aggregator ZIP contains a runnable `GalleryFL-Aggregator.exe` and no Android source, tests, retraining code, cache, external virtual environment, or persisted credential. Every internal file passes `SHA256SUMS.txt`, the sidecar archive checksum matches, and the compiled executable passes a clean Windows smoke test with a newly generated persistent token, seven-class schema, model version 2, and populated baseline comparison.
 
 ## 19. Operational configuration
 
@@ -725,6 +726,7 @@ Changing privacy or learning values changes the privacy/utility trade-off and re
 | Feature extraction | `FeatureExtractor.kt` |
 | Model taxonomy | `TaxonomyConfig.kt`, `server/taxonomy.json` |
 | Gallery organization | `OrganizeExecutor.kt` and related local components |
+| Windows executable | `server/windows_entry.py`, `windows_version_info.txt`, `.github/workflows/build-windows-aggregator.yml` |
 
 ---
 

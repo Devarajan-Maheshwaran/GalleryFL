@@ -87,30 +87,31 @@ GalleryFL/
 └── SRS.md
 ```
 
-## Public aggregator ZIP
+## Public Windows application
 
-A server-only public package is committed as:
-
-```text
-GalleryFL-aggregator.zip
-GalleryFL-aggregator.zip.sha256
-```
-
-It contains the FastAPI coordinator, dashboard, runtime model artifacts, validation guard artifact, sanitized configuration, run scripts, release metadata, internal checksums, and this architecture SRS. It excludes Android source, tests, retraining code, credentials, caches, and development reports.
-
-On Windows, install Python 3.11/3.12, extract the archive, and double-click:
+The public central aggregator is distributed as one Windows x64 ZIP:
 
 ```text
-START_GALLERYFL_SERVER.bat
+GalleryFL-Aggregator-Windows-x64.zip
 ```
 
-This is the Windows launcher equivalent for the Python server; no separate `.exe` is required.
+Its sidecar checksum is `GalleryFL-Aggregator-Windows-x64.zip.sha256`. The archive contains the native launcher:
 
-Rebuild it deterministically from repository root with:
-
-```powershell
-python .\server\scripts\package_server.py
+```text
+GalleryFL-Aggregator.exe
 ```
+
+Public users do **not** need Python, pip, Android Studio, or the source repository. Download the ZIP, verify its SHA-256, extract it completely, and run the EXE. The console shows the generated access token and remains open while the server is running; the dashboard opens automatically at `http://localhost:8000/dashboard/`.
+
+Persistent configuration, learned model state, backups, metrics, and logs are stored outside the installation folder under:
+
+```text
+%LOCALAPPDATA%\GalleryFL\Aggregator
+```
+
+The package contains the compiled FastAPI coordinator, Python runtime, dashboard, runtime model artifacts, validation guard artifact, sanitized configuration, release metadata, third-party package inventory, internal checksums, and this architecture SRS. It excludes Android source, tests, retraining code, credentials, caches, and development reports.
+
+The Windows build is produced and smoke-tested by `.github/workflows/build-windows-aggregator.yml`. The executable is currently unsigned; users must verify the published SHA-256 before running it.
 
 ## Requirements
 
