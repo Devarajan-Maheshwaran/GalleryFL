@@ -15,6 +15,5 @@
   "server_delta_clip_norm": 1.0,
   "min_unlabeled_f1_improvement": 1e-06,
   "max_global_f1_drop": 0.01,
-  "convergence_threshold": 0.001,
-  "server_token": "P54RCJHM"
+  "convergence_threshold": 0.001
 }

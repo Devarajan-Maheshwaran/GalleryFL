@@ -87,6 +87,23 @@ GalleryFL/
 └── SRS.md
 ```
 
+## Public aggregator ZIP
+
+A server-only public package is committed as:
+
+```text
+GalleryFL-aggregator.zip
+GalleryFL-aggregator.zip.sha256
+```
+
+It contains the FastAPI coordinator, dashboard, runtime model artifacts, validation guard artifact, sanitized configuration, run scripts, release metadata, internal checksums, and this architecture SRS. It excludes Android source, tests, retraining code, credentials, caches, and development reports.
+
+Rebuild it deterministically from repository root with:
+
+```powershell
+python .\server\scripts\package_server.py
+```
+
 ## Requirements
 
 ### Server

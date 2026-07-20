@@ -428,6 +428,10 @@ The server shall persist round, timestamp, client count, effective sample inform
 
 The dashboard shall display server connectivity, online clients, model version, round progress, real held-out metric history, privacy settings, and baseline/current comparison. Missing metrics shall be displayed as unavailable, never fabricated.
 
+### FR-S12 Public aggregator package
+
+The repository shall provide a server-only `GalleryFL-aggregator.zip` suitable for public distribution. The archive shall include only the coordinator runtime, dashboard, required model and validation artifacts, sanitized configuration, run scripts, release metadata, checksums, and this SRS. It shall exclude Android source, tests, retraining scripts, credentials, generated runtime output, virtual environments, and caches. A sidecar SHA-256 file shall authenticate the complete archive.
+
 ## 11. Wire protocol
 
 ### 11.1 Tensor serialization
@@ -672,6 +676,10 @@ The server loads required artifacts and exposes status, schema, dashboard, and m
 ### AC-12 Android build
 
 The Android project targets SDK 36 and compiles with JDK 21 in an environment with sufficient Gradle/Kotlin compiler memory.
+
+### AC-13 Public aggregator release
+
+The public aggregator ZIP contains no Android source, tests, retraining code, cache, virtual environment, or persisted credential. Every internal file passes `SHA256SUMS.txt`, the sidecar archive checksum matches, and an extracted clean package starts successfully with a newly generated token, seven-class schema, model version 2, and populated baseline comparison.
 
 ## 19. Operational configuration
 

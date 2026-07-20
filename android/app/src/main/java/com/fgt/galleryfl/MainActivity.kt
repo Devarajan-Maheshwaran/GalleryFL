@@ -1087,7 +1087,7 @@ fun FLSyncDialog(
                         value = codeInput,
                         onValueChange = { codeInput = it; codeError = null },
                         label = { Text("Access Token (8 chars)") },
-                        placeholder = { Text("e.g. P54RCJHM") },
+                        placeholder = { Text("e.g. ABCD2345") },
                         isError = codeError != null,
                         supportingText = codeError?.let { { Text(it, color = FGTColors.Error) } }
                             ?: {
