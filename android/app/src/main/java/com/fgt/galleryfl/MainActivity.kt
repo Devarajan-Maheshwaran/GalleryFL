@@ -382,100 +382,141 @@ fun MainScreen(
                 }
             }
         }
-        wsClient.onUpdateRequested = { round, lr, epochs, mu, dpEpsilon, dpDelta, maxGradNorm ->
+        wsClient.onUpdateRequested = { round, roundConfig ->
             currentRound = round
             isTraining = true
-            statusText = "Syncing knowledge (Round $round)..."
+            statusText = "Preparing private update (Round $round)..."
             scope.launch(Dispatchers.IO) {
                 try {
                     val apiService = RetrofitClient.getApiService(currentServerUrl, httpClient)
                     val response = apiService.getCurrentModel(currentModelVersion)
                     val format = response.headers()["X-Model-Format"]
                     val serverVersion = response.headers()["X-Model-Version"]?.toIntOrNull() ?: 0
-                    val encodedWeights = response.body()?.string() ?: ""
-                    
-                    val downloadedWeights = WeightSerializer.deserialize(encodedWeights)
+                    val downloadedWeights = WeightSerializer.deserialize(response.body()?.string() ?: "")
                     val globalWeights = if (format == "delta" && activeWeights != null) {
-                        activeWeights!!.zip(downloadedWeights) { a, b ->
-                            FloatArray(a.size) { i -> a[i] + b[i] }
+                        activeWeights!!.zip(downloadedWeights) { active, delta ->
+                            require(active.size == delta.size) { "Delta tensor shape mismatch" }
+                            FloatArray(active.size) { index -> active[index] + delta[index] }
                         }
                     } else {
                         downloadedWeights
                     }
+                    val numClasses = globalWeights[2].size / 256
+                    require(numClasses == TaxonomyConfig.NUM_CLASSES) { "Server taxonomy mismatch" }
                     activeWeights = globalWeights
                     currentModelVersion = serverVersion
                     ModelStateStore.saveWeights(context, globalWeights)
                     ModelStateStore.saveModelVersion(context, serverVersion)
 
-                    val numClasses = globalWeights[2].size / 256
-                    val repo = GalleryRepository(context)
-                    val recentImages = repo.fetchRecentImages(limit = 100)
-                    
-                    val validImages = recentImages.filter { repo.loadBitmap(it.uri) != null }
-                    val featuresList = validImages.mapNotNull { img ->
-                        repo.loadBitmap(img.uri)?.let { featureExtractor.extractFeatures(it).projection }
-                    }.ifEmpty { List(5) { FloatArray(1024) { 0f } } }
+                    // Idempotently refresh registration before either update or skip response.
+                    val prefsNow = context.getSharedPreferences("fgt_prefs", Context.MODE_PRIVATE)
+                    val liveToken = prefsNow.getString("last_access_token", accessCode) ?: accessCode
+                    val requestedClientId = registeredClientId
+                        ?: prefsNow.getString("last_registered_client_id", clientId)
+                        ?: clientId
+                    val registration = apiService.register(
+                        liveToken,
+                        RegisterRequest(Build.MODEL, "User-${clientId.take(4)}", requestedClientId),
+                    )
+                    registeredClientId = registration.client_id
+                    prefsNow.edit().putString("last_registered_client_id", registration.client_id).apply()
 
+                    val repository = GalleryRepository(context)
+                    val loadedImages = repository.fetchRecentImages(limit = 100).mapNotNull { image ->
+                        repository.loadBitmap(image.uri)?.let { bitmap -> image to bitmap }
+                    }
                     val feedbackStore = LocalFeedbackStore(context)
                     val resolver = ThresholdResolver(feedbackStore)
                     val biasOffsets = feedbackStore.getBiasOffsets(numClasses)
-                    val thresholds = resolver.getThresholdsForAllClasses(numClasses)
+                    val localHead = ClassificationHead(numClasses).also { it.setWeightsFlat(globalWeights) }
+                    val pseudoGenerator = PseudoLabelGenerator(
+                        resolver,
+                        localHead,
+                        roundConfig.pseudoLabelThreshold,
+                    )
+                    val feedbackDao = AppDatabase.getDatabase(context).feedbackDao()
 
-                    val localHead = ClassificationHead(numClasses)
-                    localHead.setWeightsFlat(globalWeights)
+                    val trainFeatures = mutableListOf<FloatArray>()
+                    val trainTargets = mutableListOf<FloatArray>()
+                    val sampleWeights = mutableListOf<Float>()
+                    var humanLabelCount = 0
+                    var pseudoLabelCount = 0
 
-                    val db = AppDatabase.getDatabase(context)
-                    val pseudoGen = PseudoLabelGenerator(resolver, localHead)
-                    
-                    val targetsList = mutableListOf<FloatArray>()
-                    featuresList.forEachIndexed { index, features ->
-                        val labels = pseudoGen.generatePseudoLabels(features, biasOffsets)
-                        if (validImages.isNotEmpty() && index < validImages.size) {
-                            val imgId = validImages[index].id
-                            val feedback = db.feedbackDao().getFeedbackForImage(imgId)
-                            if (feedback != null) {
-                                labels[feedback.classIndex] = if (feedback.isConfirmed) 1.0f else 0.0f
+                    for ((image, bitmap) in loadedImages) {
+                        val features = featureExtractor.extractFeatures(bitmap).projection
+                        val feedback = feedbackDao.getFeedbackForImage(image.id)
+                        when {
+                            feedback?.isConfirmed == true -> {
+                                val target = FloatArray(numClasses)
+                                target[feedback.classIndex] = 1f
+                                trainFeatures.add(features)
+                                trainTargets.add(target)
+                                sampleWeights.add(1f)
+                                humanLabelCount++
+                            }
+                            feedback != null -> {
+                                // A rejection without a replacement is not a valid
+                                // categorical target. Wait for an explicit correction.
+                            }
+                            else -> {
+                                val pseudo = pseudoGenerator.generatePseudoLabel(features, biasOffsets)
+                                if (pseudo != null) {
+                                    trainFeatures.add(features)
+                                    trainTargets.add(pseudo.targets)
+                                    sampleWeights.add(roundConfig.pseudoLabelWeight)
+                                    pseudoLabelCount++
+                                }
                             }
                         }
-                        targetsList.add(labels)
                     }
 
-                    // Per-example DP-SGD (server-calibrated epsilon/delta/C).
-                    // dpEpsilon <= 0 means the server disabled DP for this session.
-                    val trainer = LocalTrainer(ClassificationHead(numClasses), mu = mu)
-                    val result = trainer.train(
-                        featuresList, targetsList, globalWeights,
-                        epochs = epochs, lr = lr,
-                        dpEpsilon = dpEpsilon, dpDelta = dpDelta,
-                        maxGradNorm = maxGradNorm, numSamples = featuresList.size
-                    )
-
-                    // Use persisted latest token + re-register guard before submit to avoid 409
-                    val currentPrefs = context.getSharedPreferences("fgt_prefs", Context.MODE_PRIVATE)
-                    val liveToken = currentPrefs.getString("last_access_token", accessCode) ?: accessCode
-                    val liveClientId = registeredClientId ?: currentPrefs.getString("last_registered_client_id", clientId) ?: clientId
-                    try {
-                        val api = RetrofitClient.getApiService(currentServerUrl, httpClient)
-                        // Idempotent re-register on resume path
-                        val reg = api.register(liveToken, RegisterRequest(Build.MODEL, "User-${clientId.take(4)}", liveClientId))
-                        if (reg.client_id != registeredClientId) {
-                            registeredClientId = reg.client_id
-                            currentPrefs.edit().putString("last_registered_client_id", reg.client_id).apply()
+                    val submitToken = prefsNow.getString("last_access_token", liveToken) ?: liveToken
+                    if (trainFeatures.size < roundConfig.minLocalSamples) {
+                        apiService.skipUpdate(
+                            submitToken,
+                            SkipUpdateRequest(
+                                client_id = registration.client_id,
+                                round = round,
+                                base_model_version = currentModelVersion,
+                                reason = "only_${trainFeatures.size}_usable_examples",
+                            ),
+                        )
+                        withContext(Dispatchers.Main) {
+                            statusText = "Round $round skipped: add corrections or more confident photos"
+                            isTraining = false
                         }
-                    } catch (_: Exception) { /* best effort */ }
+                        return@launch
+                    }
 
-                    val submitToken = currentPrefs.getString("last_access_token", liveToken) ?: liveToken
-                    apiService.submitUpdate(submitToken, ClientUpdateRequest(
-                        client_id = registeredClientId ?: liveClientId,
-                        weights = WeightSerializer.serialize(result.updatedWeights),
-                        num_samples = result.numSamples,
-                        local_loss = result.localLoss,
-                        local_accuracy = result.localAccuracy,
-                        round = round,
-                        base_model_version = currentModelVersion
-                    ))
-
-                    withContext(Dispatchers.Main) { statusText = "Sync complete for Round $round" }
+                    val trainer = LocalTrainer(ClassificationHead(numClasses), mu = roundConfig.mu)
+                    val result = trainer.train(
+                        featuresList = trainFeatures,
+                        targetsList = trainTargets,
+                        sampleWeights = sampleWeights,
+                        globalWeights = globalWeights,
+                        epochs = roundConfig.localEpochs,
+                        lr = roundConfig.learningRate,
+                        dpEpsilon = roundConfig.dpEpsilon,
+                        dpDelta = roundConfig.dpDelta,
+                        maxGradNorm = roundConfig.maxGradNorm,
+                    )
+                    apiService.submitUpdate(
+                        submitToken,
+                        ClientUpdateRequest(
+                            client_id = registration.client_id,
+                            weights = WeightSerializer.serialize(result.updatedWeights),
+                            num_samples = result.numSamples,
+                            human_labeled_samples = humanLabelCount,
+                            pseudo_labeled_samples = pseudoLabelCount,
+                            local_loss = result.localLoss,
+                            local_accuracy = result.localAccuracy,
+                            round = round,
+                            base_model_version = currentModelVersion,
+                        ),
+                    )
+                    withContext(Dispatchers.Main) {
+                        statusText = "Private update sent for Round $round ($humanLabelCount corrected, $pseudoLabelCount high-confidence)"
+                    }
                 } catch (e: Exception) {
                     withContext(Dispatchers.Main) {
                         statusText = "Sync failed: ${e.message}"

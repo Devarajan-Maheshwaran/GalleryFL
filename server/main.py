@@ -138,6 +138,8 @@ async def startup_event():
     logging.info(f"Port: {port}")
     logging.info(f"FGT Access Code: {config.server_token}")
     logging.info("=========================================")
+    # Populate a real current-model baseline for the dashboard at startup.
+    await asyncio.to_thread(coordinator._run_evaluation)
 
 class RegisterRequest(BaseModel):
     device_model: str
@@ -148,10 +150,19 @@ class ClientUpdateRequest(BaseModel):
     client_id: str
     weights: str
     num_samples: int
+    human_labeled_samples: int = 0
+    pseudo_labeled_samples: int = 0
     local_loss: float
     local_accuracy: float
     round: int
     base_model_version: int
+
+
+class ClientSkipRequest(BaseModel):
+    client_id: str
+    round: int
+    base_model_version: int
+    reason: str = "insufficient_usable_examples"
 
 async def verify_token(x_fgt_token: Optional[str] = Header(None)):
     if x_fgt_token != config.server_token:
@@ -207,6 +218,10 @@ async def submit_update(req: ClientUpdateRequest):
         raise HTTPException(status_code=403, detail="Client must register before submitting updates")
     if req.num_samples <= 0:
         raise HTTPException(status_code=400, detail="num_samples must be positive")
+    if req.human_labeled_samples < 0 or req.pseudo_labeled_samples < 0:
+        raise HTTPException(status_code=400, detail="label-source counts must be non-negative")
+    if req.human_labeled_samples + req.pseudo_labeled_samples != req.num_samples:
+        raise HTTPException(status_code=400, detail="label-source counts must sum to num_samples")
     if not rate_limiter.check(req.client_id, req.round):
         raise HTTPException(status_code=429, detail="Rate limit exceeded: too many updates for the same round")
 
@@ -234,19 +249,41 @@ async def submit_update(req: ClientUpdateRequest):
 
     logging.info(f"Update ACCEPTED from client {req.client_id[:8]} (samples={req.num_samples}, loss={req.local_loss:.4f}, accuracy={req.local_accuracy:.4f})")
 
-    # Demand-aware weight: clients whose tag usage aligns with collective demand
-    # get slightly more influence on the global head (see fl_coordinator).
-    demand_weight = tag_demand.demand_weight_for_client(req.client_id)
-
     accepted = coordinator.submit_client_update(
-        req.client_id, weights,
-        {"num_samples": req.num_samples, "local_loss": req.local_loss, "local_accuracy": req.local_accuracy,
-         "round": req.round, "base_model_version": req.base_model_version, "demand_weight": demand_weight}
+        req.client_id,
+        weights,
+        {
+            "num_samples": req.num_samples,
+            "human_labeled_samples": req.human_labeled_samples,
+            "pseudo_labeled_samples": req.pseudo_labeled_samples,
+            "local_loss": req.local_loss,
+            "local_accuracy": req.local_accuracy,
+            "round": req.round,
+            "base_model_version": req.base_model_version,
+        },
     )
     if not accepted:
         raise HTTPException(status_code=409, detail="Update is stale, duplicate, or no training round is active")
     await ws_manager.broadcast({"type": "update_received", "data": {"client_id": req.client_id, "round": coordinator.current_round}})
     return {"status": "accepted"}
+
+
+@app.post("/api/training/skip-update", dependencies=[Depends(verify_token)])
+async def skip_update(req: ClientSkipRequest):
+    if req.client_id not in coordinator.registered_clients:
+        raise HTTPException(status_code=403, detail="Client must register before responding")
+    accepted = coordinator.skip_client_update(
+        req.client_id,
+        {
+            "round": req.round,
+            "base_model_version": req.base_model_version,
+            "reason": req.reason[:120],
+        },
+    )
+    if not accepted:
+        raise HTTPException(status_code=409, detail="Skip response is stale, duplicate, or no round is active")
+    return {"status": "skipped"}
+
 
 @app.get("/api/training/status")
 async def get_training_status():
@@ -316,11 +353,13 @@ async def start_training(req: Optional[TrainingStartRequest] = None):
         return {"status": "already_training"}
     if req:
         if req.min_clients is not None:
+            if req.min_clients < 2:
+                raise HTTPException(status_code=400, detail="Federated training requires at least two clients")
             config.min_clients = req.min_clients
         if req.max_rounds is not None:
-            config.max_rounds = req.max_rounds
+            config.max_rounds = max(1, req.max_rounds)
         if req.local_epochs is not None:
-            config.local_epochs = req.local_epochs
+            config.local_epochs = max(1, req.local_epochs)
         logging.info(f"Updated training config from dashboard: min_clients={config.min_clients}, max_rounds={config.max_rounds}, local_epochs={config.local_epochs}")
     # Fresh anomaly-detection baseline for this session. The 3-sigma gate
     # compares each round's delta norm against recent history; carrying history
@@ -394,11 +433,15 @@ async def get_runtime_config():
         "local_epochs": config.local_epochs,
         "learning_rate": config.learning_rate,
         "mu": config.mu,
-        "trim_pct": config.trim_pct,
-        "aggregation": "trimmed_mean",
-        "dp_epsilon": config.dp_epsilon,
-        "dp_delta": config.dp_delta,
+        "aggregation": "clipped_sample_weighted_fedavg",
+        "dp_epsilon_per_round": config.dp_epsilon,
+        "dp_delta_per_round": config.dp_delta,
         "max_grad_norm": config.max_grad_norm,
+        "pseudo_label_threshold": config.pseudo_label_threshold,
+        "pseudo_label_weight": config.pseudo_label_weight,
+        "min_local_samples": config.min_local_samples,
+        "server_delta_clip_norm": config.server_delta_clip_norm,
+        "max_global_f1_drop": config.max_global_f1_drop,
         "num_classes": num_classes,
     }
 
@@ -445,18 +488,18 @@ async def get_comparison():
                 logging.error(f"Failed to read real evaluation metrics from {eval_file}: {e}")
         return scores
 
-    baseline = compute_scores("output/bootstrap_eval_report.json")
-    federated = compute_scores("output/latest_eval.json")
+    baseline_path = "models/baseline_metrics.json"
+    federated_path = "output/latest_eval.json"
+    baseline = compute_scores(baseline_path)
+    federated = compute_scores(federated_path)
 
-    evaluated = os.path.exists("output/bootstrap_eval_report.json") and os.path.exists("output/latest_eval.json")
+    evaluated = os.path.exists(baseline_path) and os.path.exists(federated_path)
 
     return {
         "categories": categories,
         "baseline": baseline,
         "federated": federated,
-        # Honest signal for the dashboard: until server/retrain/evaluate.py has
-        # produced a held-out report and the FL evaluator has produced a current
-        # report, the UI should show "awaiting evaluation" rather than fake 0s.
+        # Honest signal for the dashboard: until the runtime evaluator has produced a current held-out report, the UI should show "awaiting evaluation" rather than fake 0s.
         "evaluated": evaluated
     }
 

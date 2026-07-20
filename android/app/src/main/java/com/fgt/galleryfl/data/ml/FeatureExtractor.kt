@@ -14,7 +14,7 @@ data class ExtractedFeatures(
     val spatialMap: FloatArray
 )
 
-/** Runs the same frozen two-output TFLite backbone used by server/retrain. */
+/** Runs the same frozen two-output TFLite backbone used by the server model contract. */
 class FeatureExtractor(private val context: Context) {
 
     private var interpreter: Interpreter? = null

@@ -11,6 +11,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Share
@@ -69,6 +70,7 @@ fun ImageDetailScreen(
     var heatmap by remember { mutableStateOf<Array<FloatArray>?>(null) }
     var predictedTag by remember { mutableStateOf<String?>(null) }
     var predictedClassIndex by remember { mutableStateOf(-1) }
+    var showCorrectionDialog by remember { mutableStateOf(false) }
 
     // For You organizational state: Favorites / Archive / Trash.
     var mediaState by remember { mutableStateOf<MediaStateEntity?>(null) }
@@ -295,7 +297,7 @@ fun ImageDetailScreen(
             }
 
             // Inline smart-tag chip with correction (user rejects -> local FL
-            // correction is logged and the on-device model retrains on idle).
+            // correction is logged and the on-device model fine-tunes during the next FL round).
             if (predictedTag != null) {
                 Surface(
                     modifier = Modifier
@@ -316,6 +318,13 @@ fun ImageDetailScreen(
                             fontWeight = FontWeight.Medium,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                         )
+                        IconButton(onClick = { showCorrectionDialog = true }) {
+                            Icon(
+                                Icons.Default.Edit,
+                                contentDescription = "Correct category",
+                                tint = FGTColors.AccentPrimary,
+                            )
+                        }
                         IconButton(
                             onClick = {
                                 scope.launch(Dispatchers.IO) {
@@ -325,10 +334,10 @@ fun ImageDetailScreen(
                                         RecordTagFeedbackUseCase(store, dao)
                                             .recordRejected(image.id, predictedClassIndex)
                                         withContext(Dispatchers.Main) {
-                                            predictedTag = null
+                                            showCorrectionDialog = true
                                             Toast.makeText(
                                                 context,
-                                                "Tag removed. GalleryFL learns from your corrections locally.",
+                                                "Tag removed. Use Correct category to provide a trusted label.",
                                                 Toast.LENGTH_SHORT
                                             ).show()
                                         }
@@ -365,4 +374,53 @@ fun ImageDetailScreen(
             }
         }
     }
+
+    if (showCorrectionDialog) {
+        AlertDialog(
+            onDismissRequest = { showCorrectionDialog = false },
+            title = { Text("Correct category") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TaxonomyConfig.modelTags.forEachIndexed { classIndex, tag ->
+                        TextButton(
+                            onClick = {
+                                val previousClass = predictedClassIndex
+                                showCorrectionDialog = false
+                                scope.launch(Dispatchers.IO) {
+                                    try {
+                                        val store = LocalFeedbackStore(context)
+                                        val dao = AppDatabase.getDatabase(context).feedbackDao()
+                                        RecordTagFeedbackUseCase(store, dao).recordCorrection(
+                                            image.id,
+                                            previousClass,
+                                            classIndex,
+                                        )
+                                        TagSignalSender.emit(listOf(tag.id))
+                                        withContext(Dispatchers.Main) {
+                                            predictedClassIndex = classIndex
+                                            predictedTag = tag.name
+                                            Toast.makeText(
+                                                context,
+                                                "Correction saved for the next private FL round.",
+                                                Toast.LENGTH_SHORT,
+                                            ).show()
+                                        }
+                                    } catch (_: Exception) {
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(tag.name)
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showCorrectionDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
+
 }

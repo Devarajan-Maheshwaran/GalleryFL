@@ -91,7 +91,7 @@ class ModelManager:
                     if value.shape != expected_shape:
                         raise ValueError(
                             f"Shape mismatch for {name}: expected {expected_shape}, got {value.shape}. "
-                            "Export a seven-parent head with server/retrain/export_model.py."
+                            "Install a valid seven-parent production head."
                         )
                     if not np.all(np.isfinite(value)):
                         raise ValueError(f"Non-finite values in {name}")

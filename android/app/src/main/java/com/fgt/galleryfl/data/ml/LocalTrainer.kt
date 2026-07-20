@@ -1,7 +1,8 @@
 package com.fgt.galleryfl.data.ml
 
-import kotlin.math.sqrt
 import kotlin.math.ln
+import kotlin.math.sqrt
+
 
 data class TrainingResult(
     val updatedWeights: List<FloatArray>,
@@ -11,26 +12,16 @@ data class TrainingResult(
 )
 
 /**
- * On-device federated trainer.
+ * Output-layer federated fine-tuning with FedProx and optional local DP.
  *
- * Privacy: when [dpEpsilon] > 0 the trainer runs DP-SGD — per-example gradient
- * clipping followed by a single SGD+FedProx step on the average of the clipped
- * gradients, with calibrated Gaussian noise added to that average
- * (sigma = C * sqrt(2 ln(1.25/delta)) / epsilon / n, see DPNoiseInjector).
- * Clipping per-example (not on the full delta after training) is what makes the
- * DP bound hold.
+ * The first dense layer is frozen. This keeps the learned centralized feature
+ * projection stable and makes example-level DP practical on a phone: only
+ * w2/b2 (1,799 parameters) receive gradients/noise.
  *
- * QUALITY FIX — adaptive clipping:
- * The previous code clipped every per-example gradient to a fixed
- * `maxGradNorm = 1.0`. For a ~270k-parameter head the per-example gradient
- * norm is O(20-100), so a cap of 1.0 clipped away ~95-99% of the signal every
- * round — the head never learned (it stayed near its random init). We now clip
- * to the p-quantile (default 90th) of the batch's per-example norms, capped by
- * [maxGradNorm]. This preserves the vast majority of the learning signal while
- * keeping the DP sensitivity correctly equal to the bound that was actually
- * used (passed straight into DPNoiseInjector).
- *
- * When [dpEpsilon] <= 0 the same averaged-gradient SGD runs with no noise.
+ * When DP is enabled, every per-example output gradient (after its public
+ * sample-quality weight) is clipped to the fixed public [maxGradNorm]. The
+ * round epsilon/delta budget is divided across [epochs] with conservative basic
+ * composition. No private adaptive quantile is used to choose the clip bound.
  */
 class LocalTrainer(
     private val head: ClassificationHead,
@@ -39,143 +30,112 @@ class LocalTrainer(
     fun train(
         featuresList: List<FloatArray>,
         targetsList: List<FloatArray>,
+        sampleWeights: List<Float> = List(featuresList.size) { 1f },
         globalWeights: List<FloatArray>,
-        epochs: Int = 3,
-        lr: Float = 0.001f,
+        epochs: Int = 1,
+        lr: Float = 0.05f,
         dpEpsilon: Float = 0f,
         dpDelta: Float = 1e-5f,
-        maxGradNorm: Float = 50.0f,
-        clipQuantile: Float = 0.9f,
-        numSamples: Int = featuresList.size
+        maxGradNorm: Float = 1.0f,
     ): TrainingResult {
+        val n = featuresList.size
+        require(n > 0) { "Local training requires at least one usable sample" }
+        require(targetsList.size == n && sampleWeights.size == n) {
+            "Features, targets, and sample weights must have equal size"
+        }
+        require(sampleWeights.all { it in 0f..1f }) { "Sample weights must be in [0,1]" }
+        require(epochs > 0 && lr > 0f && maxGradNorm > 0f)
         head.setWeightsFlat(globalWeights)
 
-        val globalW1 = globalWeights[0].copyOf()
-        val globalB1 = globalWeights[1].copyOf()
         val globalW2 = globalWeights[2].copyOf()
         val globalB2 = globalWeights[3].copyOf()
-
-        val n = featuresList.size
-        require(n > 0) { "Local training requires at least one sample" }
-        require(targetsList.size == n) { "Features and targets must have equal size" }
         val useDP = dpEpsilon > 0f
-        val gradNormBuf = FloatArray(n)
+        val epsilonPerStep = if (useDP) dpEpsilon / epochs else 0f
+        val deltaPerStep = if (useDP) dpDelta / epochs else 0f
 
-        for (epoch in 0 until epochs) {
-            // --- Pass 1: estimate per-example gradient norms for adaptive clip ---
-            for (i in 0 until n) {
-                head.forward(featuresList[i])
-                val grads = head.backward(targetsList[i])
-                gradNormBuf[i] = gradNorm(grads)
-            }
-
-            // Adaptive clip bound = p-quantile of per-example norms, capped by
-            // maxGradNorm. This is the DP sensitivity for this round.
-            val sorted = gradNormBuf.copyOf().also { it.sort() }
-            val qIdx = ((n - 1) * clipQuantile).toInt().coerceIn(0, n - 1)
-            val clipBound = minOf(sorted[qIdx], maxGradNorm).coerceAtLeast(1e-3f)
-
-            // Noise sensitivity MUST equal the bound actually used for clipping.
-            val noise = if (useDP) DPNoiseInjector(
-                epsilon = dpEpsilon,
-                delta = dpDelta,
-                sensitivity = clipBound,
-                numSamples = n
-            ) else null
-
-            // --- Pass 2: accumulate clipped gradients ---
-            val accW1 = FloatArray(head.inputDim * 256)
-            val accB1 = FloatArray(256)
+        repeat(epochs) {
             val accW2 = FloatArray(256 * head.numClasses)
             val accB2 = FloatArray(head.numClasses)
 
-            for (i in 0 until n) {
-                val features = featuresList[i]
-                val targets = targetsList[i]
-                head.forward(features)
-                val grads = head.backward(targets)
-
-                val norm = gradNormBuf[i]
-                val scale = if (norm > clipBound && norm > 1e-12f) clipBound / norm else 1f
-                accumulate(accW1, grads.dw1, scale)
-                accumulate(accB1, grads.db1, scale)
-                accumulate(accW2, grads.dw2, scale)
-                accumulate(accB2, grads.db2, scale)
+            for (index in 0 until n) {
+                head.forward(featuresList[index])
+                val gradient = head.backwardOutputOnly(targetsList[index], sampleWeights[index])
+                val norm = outputGradNorm(gradient)
+                val scale = if (norm > maxGradNorm) maxGradNorm / norm else 1f
+                accumulate(accW2, gradient.dw2, scale)
+                accumulate(accB2, gradient.db2, scale)
             }
 
-            // Average the clipped per-example gradients.
-            val invN = 1f / n
-            for (k in accW1.indices) accW1[k] *= invN
-            for (k in accB1.indices) accB1[k] *= invN
-            for (k in accW2.indices) accW2[k] *= invN
-            for (k in accB2.indices) accB2[k] *= invN
+            val inverseN = 1f / n
+            for (index in accW2.indices) accW2[index] *= inverseN
+            for (index in accB2.indices) accB2[index] *= inverseN
 
-            // Add calibrated DP noise to the averaged gradient (one shot).
-            val avgGrad = listOf(accW1, accB1, accW2, accB2)
-            val g = noise?.addNoise(avgGrad) ?: avgGrad
-            val gW1 = g[0]; val gB1 = g[1]; val gW2 = g[2]; val gB2 = g[3]
+            val averaged = listOf(accW2, accB2)
+            val noised = if (useDP) {
+                DPNoiseInjector(
+                    epsilon = epsilonPerStep,
+                    delta = deltaPerStep,
+                    sensitivity = maxGradNorm,
+                    numSamples = n,
+                ).addNoise(averaged)
+            } else {
+                averaged
+            }
+            val gradientW2 = noised[0]
+            val gradientB2 = noised[1]
 
-            // One SGD + FedProx step on the (noisy) averaged gradient.
-            var idx = 0
-            for (r in 0 until head.inputDim) {
-                for (c in 0 until 256) {
-                    val w = head.w1[r][c]
-                    head.w1[r][c] = w - lr * (gW1[idx] + mu * (w - globalW1[idx]))
-                    idx++
+            var flatIndex = 0
+            for (row in 0 until 256) {
+                for (column in 0 until head.numClasses) {
+                    val value = head.w2[row][column]
+                    head.w2[row][column] = value - lr * (
+                        gradientW2[flatIndex] + mu * (value - globalW2[flatIndex])
+                    )
+                    flatIndex++
                 }
             }
-            for (j in 0 until 256) {
-                val w = head.b1[j]
-                head.b1[j] = w - lr * (gB1[j] + mu * (w - globalB1[j]))
-            }
-            idx = 0
-            for (r in 0 until 256) {
-                for (c in 0 until head.numClasses) {
-                    val w = head.w2[r][c]
-                    head.w2[r][c] = w - lr * (gW2[idx] + mu * (w - globalW2[idx]))
-                    idx++
-                }
-            }
-            for (j in 0 until head.numClasses) {
-                val w = head.b2[j]
-                head.b2[j] = w - lr * (gB2[j] + mu * (w - globalB2[j]))
+            for (column in 0 until head.numClasses) {
+                val value = head.b2[column]
+                head.b2[column] = value - lr * (
+                    gradientB2[column] + mu * (value - globalB2[column])
+                )
             }
         }
 
-        // Final categorical cross-entropy + top-1 accuracy (reporting only).
-        var totalLoss = 0f
-        var correct = 0
-        for (i in 0 until n) {
-            val probabilities = head.forward(featuresList[i])
-            val targetClass = targetsList[i].indices.maxByOrNull { targetsList[i][it] } ?: 0
+        var weightedLoss = 0f
+        var weightedCorrect = 0f
+        var totalWeight = 0f
+        for (index in 0 until n) {
+            val probabilities = head.forward(featuresList[index])
+            val targetClass = targetsList[index].indices.maxByOrNull { targetsList[index][it] } ?: 0
             val predictedClass = probabilities.indices.maxByOrNull { probabilities[it] } ?: 0
-            totalLoss -= ln(probabilities[targetClass].coerceIn(1e-7f, 1f))
-            if (predictedClass == targetClass) correct++
+            val weight = sampleWeights[index]
+            weightedLoss -= weight * ln(probabilities[targetClass].coerceIn(1e-7f, 1f))
+            if (predictedClass == targetClass) weightedCorrect += weight
+            totalWeight += weight
         }
-
+        val denominator = totalWeight.coerceAtLeast(1e-7f)
         return TrainingResult(
             updatedWeights = head.getWeightsFlat(),
             numSamples = n,
-            localLoss = totalLoss / n,
-            localAccuracy = correct.toFloat() / n
+            localLoss = weightedLoss / denominator,
+            localAccuracy = weightedCorrect / denominator,
         )
     }
 
-    private fun gradNorm(g: ClassificationHead.Gradients): Float {
-        var s = 0.0f
-        for (row in g.dw1) for (v in row) s += v * v
-        for (v in g.db1) s += v * v
-        for (row in g.dw2) for (v in row) s += v * v
-        for (v in g.db2) s += v * v
-        return sqrt(s)
+    private fun outputGradNorm(gradient: ClassificationHead.OutputGradients): Float {
+        var sum = 0.0
+        for (row in gradient.dw2) for (value in row) sum += value * value
+        for (value in gradient.db2) sum += value * value
+        return sqrt(sum).toFloat().coerceAtLeast(1e-12f)
     }
 
-    private fun accumulate(target: FloatArray, src: FloatArray, scale: Float) {
-        for (k in target.indices) target[k] += src[k] * scale
+    private fun accumulate(target: FloatArray, source: FloatArray, scale: Float) {
+        for (index in target.indices) target[index] += source[index] * scale
     }
 
-    private fun accumulate(target: FloatArray, src: Array<FloatArray>, scale: Float) {
-        var k = 0
-        for (row in src) for (v in row) target[k++] += v * scale
+    private fun accumulate(target: FloatArray, source: Array<FloatArray>, scale: Float) {
+        var index = 0
+        for (row in source) for (value in row) target[index++] += value * scale
     }
 }

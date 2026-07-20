@@ -71,6 +71,27 @@ class ClassificationHead(val numClasses: Int = TaxonomyConfig.NUM_CLASSES) {
         val db2: FloatArray
     )
 
+    data class OutputGradients(
+        val dw2: Array<FloatArray>,
+        val db2: FloatArray
+    )
+
+    /**
+     * Output-layer-only gradient used by FL. The centralized hidden layer stays
+     * frozen, reducing client compute and DP noise from ~264k to 1,799 trained
+     * parameters while preserving the four-tensor wire format.
+     */
+    fun backwardOutputOnly(targets: FloatArray, sampleWeight: Float = 1f): OutputGradients {
+        require(targets.size == numClasses) { "Expected $numClasses targets" }
+        require(sampleWeight in 0f..1f) { "sampleWeight must be in [0,1]" }
+        val dz2 = FloatArray(numClasses) { index -> (a2[index] - targets[index]) * sampleWeight }
+        val dw2 = Array(256) { FloatArray(numClasses) }
+        for (j in 0 until numClasses) {
+            for (i in 0 until 256) dw2[i][j] = a1[i] * dz2[j]
+        }
+        return OutputGradients(dw2, dz2)
+    }
+
     /** Gradient of softmax categorical cross-entropy for a one-hot target. */
     fun backward(targets: FloatArray): Gradients {
         require(targets.size == numClasses) { "Expected $numClasses targets" }

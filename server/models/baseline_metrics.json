@@ -125,22 +125,8 @@
     ]
   ],
   "num_samples": 4952,
-  "cross_entropy": 2.0447466028313617,
-  "checkpoint": "server/output/retrain/best_checkpoint.npz",
-  "test_manifest": "$DATASET_DIR/manifests/test.csv",
   "backbone_sha256": "24d30971cb279c7aeaf5700dafc8c3aa558a172a4fcd8436149f033a24687e50",
-  "deployment_equivalence_max_abs_logit_error": 4.57763671875e-05,
-  "comparison": {
-    "old_test_macro_f1": 0.033,
-    "old_test_accuracy": null,
-    "new_test_macro_f1": 0.30549737802891735,
-    "new_test_accuracy": 0.340670436187399,
-    "macro_f1_delta": 0.2724973780289174,
-    "note": "Historical accuracy was not present in the repository, so it is not fabricated."
-  },
-  "checkpoint_sha256": "8309cc610796aa8b94d5a36a7ececb3fbffe7ea9e38286535ee0ee894ace1b12",
-  "dataset": {
-    "name": "COCO Minitrain 10K",
-    "source": "https://www.kaggle.com/datasets/banuprasadb/coco-minitrain-10k"
-  }
+  "loss": 2.0447466028313617,
+  "model_version": 2,
+  "dataset_note": "COCO Minitrain 10K parent-proxy validation baseline; real gallery quality can differ."
 }

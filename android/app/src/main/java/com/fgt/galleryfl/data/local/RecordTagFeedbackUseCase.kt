@@ -14,6 +14,16 @@ class RecordTagFeedbackUseCase(
         feedbackStore.recordRejected(classIndex)
         feedbackDao.insertFeedback(FeedbackEntity(imageId, classIndex, false))
     }
+
+    /** Store an explicit corrected parent as a trusted categorical target. */
+    suspend fun recordCorrection(imageId: Long, predictedClassIndex: Int, correctClassIndex: Int) {
+        if (predictedClassIndex != correctClassIndex) {
+            feedbackStore.recordRejected(predictedClassIndex)
+        }
+        feedbackStore.recordConfirmed(correctClassIndex)
+        feedbackStore.recordDemand(correctClassIndex)
+        feedbackDao.insertFeedback(FeedbackEntity(imageId, correctClassIndex, true))
+    }
     
     suspend fun recordPredicted(classIndex: Int) {
         feedbackStore.recordPredicted(classIndex)

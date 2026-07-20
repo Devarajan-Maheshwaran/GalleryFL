@@ -62,10 +62,18 @@ object TaxonomyConfig {
     /** Detailed tags are metadata, not model outputs. */
     val leafTags: List<TaxonomyTag> = categories.flatMap { it.children }
 
-    /** Exact order shared with server/retrain/config.py and model_schema.json. */
-    val modelTags: List<TaxonomyTag> = categories.map {
-        TaxonomyTag(it.id, it.name, 0.0f)
-    }
+    /** Exact order shared with the server model schema. */
+    val modelTags: List<TaxonomyTag> = listOf(
+        TaxonomyTag("people", "People", 0.90f),
+        TaxonomyTag("places", "Places", 0.80f),
+        TaxonomyTag("activities", "Activities", 0.80f),
+        TaxonomyTag("objects", "Objects", 0.80f),
+        // COCO provides weak proxies for these concepts. Keep automatic
+        // assignment disabled until explicit user corrections teach them.
+        TaxonomyTag("documents", "Documents", 1.01f),
+        TaxonomyTag("nature", "Nature", 0.70f),
+        TaxonomyTag("events", "Events", 1.01f),
+    )
 
     const val NUM_CLASSES: Int = 7
 

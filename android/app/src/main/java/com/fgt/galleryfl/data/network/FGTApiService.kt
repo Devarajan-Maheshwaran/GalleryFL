@@ -24,6 +24,12 @@ interface FGTApiService {
         @Body update: ClientUpdateRequest
     ): UpdateResponse
 
+    @POST("api/training/skip-update")
+    suspend fun skipUpdate(
+        @Header("X-FGT-Token") token: String,
+        @Body request: SkipUpdateRequest
+    ): UpdateResponse
+
     @GET("api/training/status")
     suspend fun getTrainingStatus(): TrainingStatusResponse
 
@@ -60,10 +66,19 @@ data class ClientUpdateRequest(
     val client_id: String,
     val weights: String,
     val num_samples: Int,
+    val human_labeled_samples: Int,
+    val pseudo_labeled_samples: Int,
     val local_loss: Float,
     val local_accuracy: Float,
     val round: Int,
     val base_model_version: Int
+)
+
+data class SkipUpdateRequest(
+    val client_id: String,
+    val round: Int,
+    val base_model_version: Int,
+    val reason: String,
 )
 
 data class UpdateResponse(

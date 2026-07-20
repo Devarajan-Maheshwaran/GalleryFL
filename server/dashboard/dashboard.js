@@ -277,17 +277,18 @@ async function refreshConfig() {
     const r = await fetch('/api/config');
     const c = await r.json();
     const rows = [
-      ['Aggregation', c.aggregation === 'trimmed_mean' ? 'Trimmed Mean' : c.aggregation],
-      ['Differential Privacy', `ε = ${c.dp_epsilon}, δ = ${c.dp_delta}`],
-      ['Gradient Clipping', `L2 norm ≤ ${c.max_grad_norm}`],
+      ['Aggregation', c.aggregation],
+      ['Local DP / round', `ε = ${c.dp_epsilon_per_round}, δ = ${c.dp_delta_per_round}`],
+      ['Example Gradient Clip', `L2 norm ≤ ${c.max_grad_norm}`],
+      ['Client Delta Clip', `L2 norm ≤ ${c.server_delta_clip_norm}`],
       ['Learning Rate', String(c.learning_rate)],
       ['FedProx μ', String(c.mu)],
-      ['Trim Fraction', `${Math.round(c.trim_pct * 100)}%`],
+      ['Pseudo-label Gate', `confidence ≥ ${c.pseudo_label_threshold}, weight ${c.pseudo_label_weight}`],
     ];
     const mk = arr => arr.map(([k, v]) => `<div class="priv__row"><span class="priv__k">${k}</span><span class="priv__v">${v}</span></div>`).join('');
     document.getElementById('privacy-config').innerHTML = mk(rows);
     document.getElementById('privacy-rows').innerHTML = mk(rows);
-    document.getElementById('agg-hint').innerText = `Aggregation: ${c.aggregation === 'trimmed_mean' ? 'Trimmed Mean' : c.aggregation} · DP ε=${c.dp_epsilon}`;
+    document.getElementById('agg-hint').innerText = `Aggregation: ${c.aggregation} · local DP ε=${c.dp_epsilon_per_round}/round`;
   } catch (e) {}
 }
 async function refreshLeaderboard() {

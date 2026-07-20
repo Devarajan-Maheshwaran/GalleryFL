@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import time
 import numpy as np
@@ -8,6 +9,7 @@ from metrics import MetricsStore, RoundMetrics
 from model_manager import ModelManager
 from ws_manager import ws_manager
 from security import validate_update
+from fl_math import clipped_fedavg
 import logging
 
 class FLCoordinator:
@@ -24,6 +26,7 @@ class FLCoordinator:
         self.registered_clients: Dict[str, dict] = {}
         self.client_updates: Dict[str, List[np.ndarray]] = {}
         self.client_metadata: Dict[str, dict] = {}
+        self.skipped_clients: Set[str] = set()
         self.round_participants: Set[str] = set()
         self.round_timeout_seconds: int = 120
         self._aggregation_lock = asyncio.Lock()
@@ -44,7 +47,12 @@ class FLCoordinator:
     async def on_client_reconnected(self, client_id: str) -> None:
         """Resume an interrupted participant without admitting new mid-round clients."""
         self.record_heartbeat(client_id)
-        if self.is_training and client_id in self.round_participants and client_id not in self.client_updates:
+        if (
+            self.is_training
+            and client_id in self.round_participants
+            and client_id not in self.client_updates
+            and client_id not in self.skipped_clients
+        ):
             logging.info("Reissuing round %s request to reconnected client %s", self.current_round, client_id[:8])
             await self._request_update(client_id)
 
@@ -77,6 +85,7 @@ class FLCoordinator:
         logging.info(f"Round {self.current_round}/{self.config.max_rounds} starting")
         self.client_updates.clear()
         self.client_metadata.clear()
+        self.skipped_clients.clear()
 
         selected = self.get_online_registered()
         if len(selected) < self.config.min_clients:
@@ -102,18 +111,42 @@ class FLCoordinator:
                 "dp_epsilon": self.config.dp_epsilon,
                 "dp_delta": self.config.dp_delta,
                 "max_grad_norm": self.config.max_grad_norm,
+                "pseudo_label_threshold": self.config.pseudo_label_threshold,
+                "pseudo_label_weight": self.config.pseudo_label_weight,
+                "min_local_samples": self.config.min_local_samples,
             }},
         }, client_id)
 
     async def _round_timeout(self):
         round_at_start = self.current_round
         await asyncio.sleep(self.round_timeout_seconds)
-        if self.is_training and self.current_round == round_at_start and len(self.client_updates) > 0:
-            logging.warning(f"Round {round_at_start} timed out with {len(self.client_updates)} updates, proceeding to aggregate")
+        if not self.is_training or self.current_round != round_at_start:
+            return
+        if len(self.client_updates) >= self.config.min_clients:
+            logging.warning(
+                "Round %s timed out with %s usable updates; aggregating",
+                round_at_start,
+                len(self.client_updates),
+            )
             await self._aggregate_and_advance()
+        else:
+            logging.warning(
+                "Round %s stopped: only %s usable updates (need %s)",
+                round_at_start,
+                len(self.client_updates),
+                self.config.min_clients,
+            )
+            self.is_training = False
+            await ws_manager.broadcast({
+                "type": "training_complete",
+                "data": {
+                    "reason": "insufficient_usable_updates",
+                    "final_round": max(0, self.current_round - 1),
+                },
+            })
 
     def submit_client_update(self, client_id: str, weights: List[np.ndarray], metadata: dict) -> bool:
-        if not self.is_training:
+        if not self.is_training or client_id not in self.round_participants:
             return False
         if metadata.get("round") != self.current_round:
             logging.warning("Rejected stale update from %s for round %s (current %s)", client_id[:8], metadata.get("round"), self.current_round)
@@ -133,15 +166,57 @@ class FLCoordinator:
             nickname=self.registered_clients.get(client_id, {}).get("nickname", client_id[:8]),
             images=metadata.get("num_samples", 0),
             local_acc=metadata.get("local_accuracy", 0.0),
-            epsilon_used=self.config.dp_epsilon
+            epsilon_used=self.config.dp_epsilon,
+            delta_used=self.config.dp_delta if self.config.dp_epsilon > 0 else 0.0,
         )
 
         expected = len(self.round_participants)
-        logging.info(f"Registered client update from {client_id[:8]} (total round updates: {len(self.client_updates)}/{expected})")
-        
-        if len(self.client_updates) >= max(self.config.min_clients, expected):
-            asyncio.create_task(self._aggregate_and_advance())
+        logging.info(
+            "Registered client update from %s (usable=%s, skipped=%s, expected=%s)",
+            client_id[:8],
+            len(self.client_updates),
+            len(self.skipped_clients),
+            expected,
+        )
+        if len(self.client_updates) + len(self.skipped_clients) >= expected:
+            if len(self.client_updates) >= self.config.min_clients:
+                asyncio.create_task(self._aggregate_and_advance())
+            else:
+                asyncio.create_task(self._stop_for_insufficient_updates())
         return True
+
+    def skip_client_update(self, client_id: str, metadata: dict) -> bool:
+        """Record a valid response from a device with too little usable data."""
+        if not self.is_training or client_id not in self.round_participants:
+            return False
+        if metadata.get("round") != self.current_round:
+            return False
+        if metadata.get("base_model_version") != self.model_manager.current_version:
+            return False
+        if client_id in self.client_updates or client_id in self.skipped_clients:
+            return False
+        self.skipped_clients.add(client_id)
+        logging.info("Client %s skipped round %s: %s", client_id[:8], self.current_round, metadata.get("reason"))
+        expected = len(self.round_participants)
+        if len(self.client_updates) + len(self.skipped_clients) >= expected:
+            if len(self.client_updates) >= self.config.min_clients:
+                asyncio.create_task(self._aggregate_and_advance())
+            else:
+                asyncio.create_task(self._stop_for_insufficient_updates())
+        return True
+
+    async def _stop_for_insufficient_updates(self) -> None:
+        async with self._aggregation_lock:
+            if not self.is_training:
+                return
+            self.is_training = False
+            await ws_manager.broadcast({
+                "type": "training_complete",
+                "data": {
+                    "reason": "insufficient_usable_updates",
+                    "final_round": max(0, self.current_round - 1),
+                },
+            })
 
     async def _aggregate_and_advance(self):
         async with self._aggregation_lock:
@@ -149,18 +224,58 @@ class FLCoordinator:
                 return
 
             num_updates = len(self.client_updates)
-            logging.info(f"=== [AGGREGATING] Aggregating {num_updates} client updates for round {self.current_round} ===")
-            aggregated = self._trimmed_mean_aggregate()
+            logging.info("=== [AGGREGATING] %s usable client updates for round %s ===", num_updates, self.current_round)
 
-            # FedProx is enforced by the client local objective. Applying it a
-            # second time here is not FedProx and double-regularises updates.
-            self.model_manager.update_global_weights(aggregated)
+            # FedProx is the local objective; the server performs robust,
+            # effective-sample-weighted FedAvg over bounded client deltas.
+            candidate_weights = self._robust_fedavg_aggregate()
+            current_eval = await asyncio.to_thread(
+                self._run_evaluation, self.model_manager.global_weights, False, self.model_manager.current_version
+            )
+            candidate_eval = await asyncio.to_thread(
+                self._run_evaluation, candidate_weights, False, self.model_manager.current_version + 1
+            )
 
-            # Prefer a real held-out, TF-free evaluation of the freshly
-            # aggregated head. evaluate.py creates the raw-feature cache once.
-            # If the operator has not evaluated a dataset yet, fall back to
-            # sample-weighted client metrics instead of publishing fake zeros.
-            eval_result = await asyncio.to_thread(self._run_evaluation)
+            accepted_candidate = True
+            if current_eval.get("available") and candidate_eval.get("available"):
+                human_labels = sum(
+                    int(metadata.get("human_labeled_samples", 0))
+                    for metadata in self.client_metadata.values()
+                )
+                # Unlabelled self-training is accepted only when it does not
+                # regress the held-out proxy. Trusted corrections may trade a
+                # small proxy drop for real gallery-domain adaptation.
+                if human_labels > 0:
+                    baseline_path = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)), "models", "baseline_metrics.json"
+                    )
+                    try:
+                        with open(baseline_path, "r", encoding="utf-8") as handle:
+                            deployment_baseline = float(json.load(handle)["macro_f1"])
+                    except Exception:
+                        deployment_baseline = float(current_eval["macro_f1"])
+                    allowed_floor = deployment_baseline - self.config.max_global_f1_drop
+                else:
+                    allowed_floor = float(current_eval["macro_f1"])
+                if float(candidate_eval["macro_f1"]) < allowed_floor:
+                    accepted_candidate = False
+                    logging.warning(
+                        "Rejected round %s candidate: macro F1 %.4f < guarded floor %.4f",
+                        self.current_round,
+                        candidate_eval["macro_f1"],
+                        allowed_floor,
+                    )
+
+            if accepted_candidate:
+                self.model_manager.update_global_weights(candidate_weights)
+                eval_result = await asyncio.to_thread(
+                    self._run_evaluation, self.model_manager.global_weights, True, self.model_manager.current_version
+                )
+            else:
+                eval_result = await asyncio.to_thread(
+                    self._run_evaluation, self.model_manager.global_weights, True, self.model_manager.current_version
+                )
+
             total_samples = sum(m.get("num_samples", 0) for m in self.client_metadata.values())
             if eval_result.get("available"):
                 avg_loss = float(eval_result["loss"])
@@ -206,74 +321,48 @@ class FLCoordinator:
                 }})
                 await self._run_round()
 
-    def _trimmed_mean_aggregate(self) -> List[np.ndarray]:
-        aggregated = []
-        num_layers = len(self.model_manager.global_weights)
-        sample_counts = np.array([self.client_metadata[cid].get("num_samples", 1) for cid in self.client_updates])
-        
-        # Apply trust scores
-        if self.trust_scorer:
-            trust_scores = np.array([self.trust_scorer.get_score(cid) for cid in self.client_updates])
-        else:
-            trust_scores = np.ones_like(sample_counts, dtype=float)
-
-        # Demand-aware aggregation: clients whose local tag usage aligns with the
-        # collective (global) demand get a little more say in the global head,
-        # so the aggregated model is biased toward what users actually want
-        # (a "smarter" global model). Per-user Non-IID skew is still handled
-        # on-device via personalisation bias offsets.
-        demand_weights = np.array([
-            float(self.client_metadata[cid].get("demand_weight", 1.0))
-            for cid in self.client_updates
-        ])
-
-        effective_weights = sample_counts * trust_scores * demand_weights
-        sample_weights = effective_weights / (effective_weights.sum() + 1e-9)
-
-        for i in range(num_layers):
-            layer_updates = [self.client_updates[cid][i] for cid in self.client_updates]
-            stacked = np.stack(layer_updates, axis=0)
-
-            if len(layer_updates) >= 4:
-                trim_count = max(1, int(len(layer_updates) * self.config.trim_pct))
-                sorted_stack = np.sort(stacked, axis=0)
-                trimmed = sorted_stack[trim_count:-trim_count]
-                mean_layer = np.mean(trimmed, axis=0)
-            elif len(layer_updates) >= 2:
-                weighted = np.zeros_like(layer_updates[0])
-                for j, cid in enumerate(self.client_updates):
-                    weighted += sample_weights[j] * layer_updates[j]
-                mean_layer = weighted
-            else:
-                mean_layer = layer_updates[0]
-
-            aggregated.append(mean_layer.astype(np.float32))
-
-        return aggregated
-
-    def _run_evaluation(self) -> dict:
-        """Evaluate the active four-tensor head on cached held-out raw features.
-
-        ``server/retrain/evaluate.py`` creates ``output/retrain/test_features.npz``
-        with the exact frozen-backbone features used for the baseline test. The
-        deployed head has train normalization folded into w1/b1, so this pure
-        NumPy path is also the Android inference graph. No deleted retrain script
-        or TensorFlow runtime is involved.
-        """
-        import json
-        from retrain.config import LABELS
-        from retrain.pipeline import (
-            atomic_write_json,
-            cross_entropy,
-            forward_logits,
-            multiclass_metrics,
-            softmax,
+    def _robust_fedavg_aggregate(self) -> List[np.ndarray]:
+        client_ids = list(self.client_updates)
+        updates = [self.client_updates[client_id] for client_id in client_ids]
+        effective_counts = []
+        for client_id in client_ids:
+            metadata = self.client_metadata[client_id]
+            # Explicit corrections count fully; pseudo-labels have the public
+            # reduced weight configured by the server. Trust can only reduce a
+            # device's influence. Tag-demand popularity does not alter training.
+            human = max(0, int(metadata.get("human_labeled_samples", 0)))
+            pseudo = max(0, int(metadata.get("pseudo_labeled_samples", 0)))
+            effective = human + self.config.pseudo_label_weight * pseudo
+            if effective <= 0:
+                effective = float(metadata.get("num_samples", 1))
+            trust = self.trust_scorer.get_score(client_id) if self.trust_scorer else 1.0
+            effective_counts.append(max(1e-6, effective * trust))
+        return clipped_fedavg(
+            self.model_manager.global_weights,
+            updates,
+            effective_counts,
+            self.config.server_delta_clip_norm,
         )
 
+    def _run_evaluation(
+        self,
+        weights: List[np.ndarray] | None = None,
+        persist: bool = True,
+        model_version: int | None = None,
+    ) -> dict:
+        """Evaluate a four-tensor head on cached held-out raw features.
+
+        ``models/validation_features.npz`` contains the held-out raw backbone
+        features used for the deployment baseline. The deployed head has feature
+        normalization folded into w1/b1, so this pure NumPy path is also the
+        Android inference graph and requires no training framework.
+        """
+        from model_eval import LABELS, atomic_write_json, evaluate
+
         server_dir = os.path.dirname(os.path.abspath(__file__))
-        cache_path = os.path.join(server_dir, "output", "retrain", "test_features.npz")
+        cache_path = os.path.join(server_dir, "models", "validation_features.npz")
         if not os.path.exists(cache_path):
-            logging.info("Held-out feature cache not found; run server/retrain/evaluate.py")
+            logging.error("Required validation artifact is missing: %s", cache_path)
             return {"available": False}
 
         try:
@@ -284,20 +373,19 @@ class FLCoordinator:
             if cached_names != LABELS:
                 raise ValueError(f"cache labels {cached_names} do not match runtime labels {LABELS}")
 
-            w1, b1, w2, b2 = self.model_manager.global_weights
-            probabilities = softmax(forward_logits(features, w1, b1, w2, b2))
-            report = multiclass_metrics(labels, probabilities)
+            evaluated_weights = weights if weights is not None else self.model_manager.global_weights
+            report = evaluate(features, labels, evaluated_weights)
             report.update({
                 "schema_version": 1,
                 "task": "single_label_multiclass",
                 "decision_rule": "argmax",
                 "labels": list(LABELS),
-                "loss": cross_entropy(labels, probabilities),
                 "available": True,
-                "model_version": self.model_manager.current_version,
+                "model_version": model_version if model_version is not None else self.model_manager.current_version,
             })
-            eval_path = os.path.join(server_dir, "output", "latest_eval.json")
-            atomic_write_json(eval_path, report)
+            if persist:
+                eval_path = os.path.join(server_dir, "output", "latest_eval.json")
+                atomic_write_json(eval_path, report)
             logging.info(
                 "Held-out eval -> loss=%.4f macro_f1=%.4f accuracy=%.4f",
                 report["loss"],
@@ -319,6 +407,10 @@ class FLCoordinator:
             
             # If we now have enough updates from the remaining participants, aggregate!
             expected = len(self.round_participants)
-            if self.is_training and len(self.client_updates) >= max(self.config.min_clients, expected) and expected > 0:
-                asyncio.create_task(self._aggregate_and_advance())
+            responses = len(self.client_updates) + len(self.skipped_clients)
+            if self.is_training and expected > 0 and responses >= expected:
+                if len(self.client_updates) >= self.config.min_clients:
+                    asyncio.create_task(self._aggregate_and_advance())
+                else:
+                    asyncio.create_task(self._stop_for_insufficient_updates())
 

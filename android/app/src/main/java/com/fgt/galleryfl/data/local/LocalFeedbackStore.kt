@@ -91,17 +91,17 @@ class LocalFeedbackStore(private val context: Context) : FeedbackStore {
         // than average get a positive offset (fire more readily for them); tags
         // they rarely use get a negative offset. This is what makes smart
         // tagging adapt per-user instead of being identical for everyone.
-        val demandCounts = IntArray(numClasses) { i -> getDemandCount(i) }
-        val dMin = demandCounts.minOrNull() ?: 0
-        val dMax = demandCounts.maxOrNull() ?: 0
-        val demandRange = (dMax - dMin).coerceAtLeast(1)
+        val demandCounts = IntArray(numClasses) { index -> getDemandCount(index) }
+        val meanDemand = if (numClasses > 0) demandCounts.average().toFloat() else 0f
+        val maxDeviation = demandCounts.maxOfOrNull { kotlin.math.abs(it - meanDemand) }
+            ?.coerceAtLeast(1f) ?: 1f
 
-        for (i in 0 until numClasses) {
-            val stats = getPerClassStats(i)
+        for (index in 0 until numClasses) {
+            val stats = getPerClassStats(index)
             val feedbackBias = FeedbackMath.calculateBias(stats.confirmed, stats.rejected)
-            val norm = (demandCounts[i] - dMin).toFloat() / demandRange
-            val demandBias = FeedbackMath.calculateDemandBias(norm)
-            offsets[i] = max(-MAX_BIAS_OFFSET, min(MAX_BIAS_OFFSET, feedbackBias + demandBias))
+            val centeredDemand = (demandCounts[index] - meanDemand) / maxDeviation
+            val demandBias = FeedbackMath.calculateDemandBias(centeredDemand)
+            offsets[index] = max(-MAX_BIAS_OFFSET, min(MAX_BIAS_OFFSET, feedbackBias + demandBias))
         }
         return offsets
     }
@@ -111,9 +111,9 @@ object FeedbackMath {
     private const val MIN_EVIDENCE_EVENTS = 5
     private const val MAX_THRESHOLD_ADJUSTMENT = 0.10f
     private const val ADJUSTMENT_RATE = 0.01f
-    private const val MAX_BIAS_OFFSET = 1.0f
-    private const val BIAS_RATE = 0.1f
-    private const val DEMAND_BIAS_GAIN = 0.8f
+    private const val MAX_BIAS_OFFSET = 0.5f
+    private const val BIAS_RATE = 0.05f
+    private const val DEMAND_BIAS_GAIN = 0.25f
 
     fun calculateThreshold(confirmed: Int, rejected: Int, defaultThreshold: Float): Float {
         val totalEvents = confirmed + rejected
@@ -122,7 +122,7 @@ object FeedbackMath {
         val netRejections = rejected - confirmed
         var adjustment = netRejections * ADJUSTMENT_RATE
         adjustment = max(-MAX_THRESHOLD_ADJUSTMENT, min(MAX_THRESHOLD_ADJUSTMENT, adjustment))
-        return max(0.1f, min(0.9f, defaultThreshold + adjustment))
+        return max(0.0f, min(1.01f, defaultThreshold + adjustment))
     }
 
     fun calculateBias(confirmed: Int, rejected: Int): Float {
@@ -134,11 +134,10 @@ object FeedbackMath {
         return max(-MAX_BIAS_OFFSET, min(MAX_BIAS_OFFSET, bias))
     }
 
-    /** Demand bias from a normalised usage value in [0,1] (0.5 = average).
-     * Positive when a user exercises a tag more than average, negative when less. */
-    fun calculateDemandBias(normalised: Float): Float {
-        val centered = (normalised - 0.5f) * 2f
-        return max(-MAX_BIAS_OFFSET, min(MAX_BIAS_OFFSET, centered * DEMAND_BIAS_GAIN))
+    /** Bounded demand bias from a usage value centered around this user's mean. */
+    fun calculateDemandBias(centered: Float): Float {
+        val bounded = max(-1f, min(1f, centered))
+        return max(-MAX_BIAS_OFFSET, min(MAX_BIAS_OFFSET, bounded * DEMAND_BIAS_GAIN))
     }
 }
 
