@@ -1,12 +1,14 @@
-# GalleryFL Software Requirements Specification
+# Federated Gallery Tags (FGT) — System and Federated Learning Architecture SRS
 
-**Document version:** 2.0
+**Document version:** 3.0
 
-**Status:** Implemented core baseline
+**Status:** As-implemented specification, verified against repository HEAD
 
 **System:** GalleryFL Android application and Federated Gallery Tags server
 
 **Primary deployment:** Private local-area network
+
+**Verification baseline:** Git commit `a9a5632` plus the conformance corrections recorded in this revision
 
 ---
 
@@ -40,13 +42,41 @@ The core system does not include:
 - Fine-grained 34-leaf model outputs; leaf tags remain taxonomy metadata only.
 - On-server backbone training.
 
+### 2.1 Implementation verification against the supplied architecture addendum
+
+The supplied architecture addendum was treated as a design input and checked against the current repository. Historical claims that no longer match the implementation are corrected below; the remainder of this SRS is normative for the shipped code.
+
+| Area from supplied addendum | Repository evidence | As-implemented verdict |
+|---|---|---|
+| Federated orchestration | `server/main.py`, `fl_coordinator.py`, `model_manager.py` | **Conforms:** custom FastAPI coordinator; Flower is not the production transport. |
+| FL communication | Android Retrofit/OkHttp and `FGTWebSocketClient.kt`; FastAPI REST/WS routes | **Conforms:** REST carries control/model data and WebSocket carries round events and heartbeats. |
+| Split mobile model | Identical server/Android `base_model.tflite`; `FeatureExtractor.kt`; four-tensor head | **Conforms:** frozen LiteRT backbone with 1024-D projection and separately trainable head. |
+| Task semantics | `model_schema.json`, `ClassificationHead.kt`, `TaxonomyConfig.kt` | **Corrected:** the deployed task is seven-parent **single-label multiclass**, using softmax/argmax—not 34-output multi-label sigmoid. The 34 leaves are metadata. |
+| Trainable scope | `LocalTrainer.kt`, `backwardOutputOnly` | **Corrected:** FL freezes `w1/b1` and trains only `w2/b2` (1,799 parameters), rather than backpropagating the complete head. |
+| Unlabelled learning | `PseudoLabelGenerator.kt`, `MainActivity.kt` | **Conforms with safeguards:** only high-confidence top-1 pseudo-labels are used; they receive reduced weight, and uncertain/rejected-only examples are excluded. |
+| Trusted supervision | `RecordTagFeedbackUseCase.kt`, `ImageDetailScreen.kt` | **Upgraded:** an explicit seven-parent correction picker persists full-weight categorical targets. |
+| Non-IID optimizer | `LocalTrainer.kt` | **Conforms:** categorical cross-entropy plus FedProx against downloaded global output weights. The local step is a full usable-set gradient, not the mini-batch process described historically. |
+| Aggregation | `server/fl_math.py`, `_robust_fedavg_aggregate` | **Corrected:** clipped effective-sample-weighted FedAvg is current. Trimmed Mean is not in the shipped implementation. |
+| Aggregation weights | Human/pseudo counts and trust score in `fl_coordinator.py` | **Upgraded:** human examples count fully, pseudo-labels use configured reduced weight, and tag popularity cannot bias model aggregation. |
+| Differential privacy | `DPNoiseInjector.kt`, `LocalTrainer.kt`, `metrics.py` | **Upgraded:** fixed per-example clipping, `C/n` average sensitivity, secure Gaussian randomness, and conservative epoch/round composition replace the historical mis-calibrated whole-update path. |
+| Candidate validation | `model_eval.py`, `validation_features.npz`, `baseline_metrics.json` | **Upgraded:** framework-free macro-F1/accuracy evaluation is populated and runs before a candidate is committed. |
+| Flower positioning | README/SRS verification evidence | **Conforms:** Flower 1.32 is a numerical reference verifier only; production remains the custom Android protocol. |
+| Android application stack | `android/app/build.gradle.kts` | **Corrected:** Kotlin, Compose, LiteRT, Retrofit, OkHttp, Moshi, Room, DataStore, Coil, MediaStore, and ExifInterface are present. Hilt and Paging are not dependencies. |
+| Dashboard stack | `server/dashboard/` | **Corrected:** the dashboard uses self-contained Canvas drawing, not Chart.js. |
+| Gallery organization | `MainActivity.kt`, `OrganizeExecutor.kt` | **Corrected:** organization and undo are wired into the UI; this is no longer an unexposed component. |
+| Benchmark state | `models/baseline_metrics.json`, runtime model evaluator | **Corrected:** held-out metrics are populated; TensorFlow is not required by the live server evaluator. |
+
+### 2.2 Normative architecture decision
+
+The current single-label seven-parent contract is intentional. It supersedes older multi-label/34-leaf descriptions because the production head, Android folder policy, correction UI, model schema, FL loss, aggregation validator, and held-out metrics all use the same seven ordered parent classes. Reintroducing multi-label leaf outputs would require a coordinated schema version, new training data, new head artifacts, Android loss/inference changes, server evaluator changes, and a migration of persisted client weights.
+
 ## 3. Definitions
 
 | Term | Definition |
 |---|---|
 | Parent class | One of People, Places, Activities, Objects, Documents, Nature, Events |
 | Leaf tag | A detailed taxonomy item such as selfie, beach, receipt, or wedding; not a model output |
-| Backbone | Frozen TFLite image network that emits a 1024-D projection and a 7×7×1024 spatial map |
+| Backbone | Frozen MobileNetV3-Small-derived TFLite image network that emits a 1024-D projection and a 7×7×1024 spatial map |
 | Head | Four tensors: `w1`, `b1`, `w2`, `b2` |
 | Global model | Current server-owned head |
 | Local update | Client head after one or more local optimization steps |
@@ -72,6 +102,8 @@ The core system does not include:
 - Jetpack Compose / Material 3
 - Android SDK 36, minimum SDK 29
 - Google LiteRT/TFLite interpreter and GPU delegate
+- Frozen MobileNetV3-Small-derived two-output backbone
+- Pure Kotlin seven-parent head and output-layer optimizer
 - Room persistence
 - DataStore preferences
 - Retrofit, OkHttp, Moshi
@@ -86,7 +118,7 @@ The core system does not include:
 - NumPy
 - Pydantic
 - REST and WebSocket transport
-- Self-contained HTML/CSS/JavaScript dashboard
+- Self-contained HTML/CSS/JavaScript dashboard with Canvas-based charts
 
 ### 5.3 FL verification reference
 
@@ -148,6 +180,7 @@ prediction = argmax(probabilities)
 
 ### 7.3 Backbone contract
 
+- Architecture lineage: MobileNetV3-Small-style inverted residual/squeeze-excitation backbone; the shipped TFLite graph contains blocks through `expanded_conv_10` plus the GalleryFL projection outputs.
 - Input: float32 `[1,224,224,3]`.
 - Pixel transform: `pixel / 127.5 - 1.0`.
 - Required projection output: float32 `[1,1024]`.
@@ -545,6 +578,26 @@ A four-client live FastAPI/REST/WebSocket run completed eight rounds. All client
 ### 16.4 Central model baseline
 
 The deployed model's held-out macro F1 is 0.3055 versus the historical broken pipeline's 0.033. The runtime validation path reproduces 0.3055 without TensorFlow.
+
+### 16.5 SRS-to-implementation conformance audit
+
+The version 3.0 audit executed direct assertions over the shipped artifacts and source contract. It passed all of the following checks:
+
+- exactly `README.md` and `SRS.md` remain as Markdown documentation;
+- seven labels and their order agree across taxonomy, schema, Android, and model evaluator;
+- production tensor shapes are `(1024,256)`, `(256,)`, `(256,7)`, `(7,)`;
+- Android and server backbone SHA-256 values are identical: `24d30971cb279c7aeaf5700dafc8c3aa558a172a4fcd8436149f033a24687e50`;
+- runtime evaluation reproduces macro F1 `0.3054973780` and accuracy `0.3406704362` on 4,952 samples;
+- thresholds use argmax/post-argmax abstention semantics;
+- the FL configuration requires at least two clients and reduced pseudo-label weight;
+- Android source contains softmax, output-only backpropagation, pseudo/human sample accounting, fixed DP clipping, and skip handling;
+- server source contains the required routes, clipped weighted FedAvg, candidate evaluation, and commit guard;
+- Android dependencies match the declared stack and contain no Hilt, Paging, or residual test dependencies;
+- self-contained dashboard code contains no Chart.js runtime dependency;
+- model serialization/deserialization is byte-symmetric;
+- weighted aggregation and client-delta clipping produce the expected numerical results.
+
+Audit result: **IMPLEMENTATION_CONFORMANCE_PASS**.
 
 ## 17. Known limitations
 

@@ -118,9 +118,24 @@ class ModelManager:
         finally:
             if temp_name and os.path.exists(temp_name):
                 os.unlink(temp_name)
-        (Path(self.model_dir) / "model_version.txt").write_text(
-            f"{self.current_version}\n", encoding="utf-8"
-        )
+        version_path = Path(self.model_dir) / "model_version.txt"
+        version_temp = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=self.model_dir,
+                mode="w",
+                encoding="utf-8",
+                suffix=".txt",
+                delete=False,
+            ) as handle:
+                version_temp = handle.name
+                handle.write(f"{self.current_version}\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(version_temp, version_path)
+        finally:
+            if version_temp and os.path.exists(version_temp):
+                os.unlink(version_temp)
 
     def get_serialized_weights(self) -> str:
         byte_chunks = []
